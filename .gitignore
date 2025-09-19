@@ -1,0 +1,31 @@
+﻿# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*.class
+
+# Virtual environments
+.env/
+.venv/
+venv/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# Checkpoints and trained models
+checkpoints/
+
+# Data files
+*.mat
+
+# Plots and outputs
+figures/
+
+# IDE settings
+.vscode/
+.idea/
+
+# Misc
+*.log
+
