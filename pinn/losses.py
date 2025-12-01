@@ -210,7 +210,7 @@ def _residual_loss_standard(
         dA_r_dz
         + 0.5 * config.alpha * a_real
         + 0.5 * config.beta2 * d2A_i_dt2
-        + (config.beta3 / 6.0) * d3A_i_dt3
+        - (config.beta3 / 6.0) * d3A_r_dt3
         + config.gamma * power * a_imag
     )
 
@@ -218,7 +218,7 @@ def _residual_loss_standard(
         dA_i_dz
         + 0.5 * config.alpha * a_imag
         - 0.5 * config.beta2 * d2A_r_dt2
-        - (config.beta3 / 6.0) * d3A_r_dt3
+        - (config.beta3 / 6.0) * d3A_i_dt3
         - config.gamma * power * a_real
     )
 
@@ -322,13 +322,13 @@ def _residual_loss_ssfm(
     residual_real = (
         dA_r_dz
         + 0.5 * config.beta2 * d2A_i_dt2
-        + (config.beta3 / 6.0) * d3A_i_dt3
+        - (config.beta3 / 6.0) * d3A_r_dt3
         + config.gamma * power * a_imag
     )
     residual_imag = (
         dA_i_dz
         - 0.5 * config.beta2 * d2A_r_dt2
-        - (config.beta3 / 6.0) * d3A_r_dt3
+        - (config.beta3 / 6.0) * d3A_i_dt3
         - config.gamma * power * a_real
     )
 

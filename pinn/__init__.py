@@ -9,6 +9,7 @@ from .dataset import (
 )
 from .gradients import GradientResult, compute_output_gradients
 from .losses import PINNLossComponents, compute_pinn_loss_components, compute_pinn_loss_components_ssfm
+from .physics import residual_statistics
 from .plotting import plot_loss_curve
 
 __all__ = [
@@ -23,4 +24,5 @@ __all__ = [
     "PINNLossComponents",
     "compute_pinn_loss_components",
     "compute_pinn_loss_components_ssfm",
+    "residual_statistics",
 ]

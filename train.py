@@ -3,12 +3,18 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import numpy as np
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
 from pinn import TrainingConfig
-from pinn.losses import PINNLossComponents, compute_pinn_loss_components, compute_pinn_loss_components_ssfm
+from pinn.physics import residual_statistics
+from pinn.losses import (
+    PINNLossComponents,
+    compute_pinn_loss_components,
+    compute_pinn_loss_components_ssfm,
+)
 
 
 def _resolve_device(choice: str) -> torch.device:
@@ -29,6 +35,43 @@ def _configure_scheduler(optimizer: torch.optim.Optimizer, config: TrainingConfi
     )
 
 
+def _estimate_teacher_residual_mse(dataset, config: TrainingConfig):
+    """Estimate teacher residual MSE using finite differences on the ground-truth grid."""
+
+    if dataset is None:
+        return None
+
+    stats = getattr(dataset, "stats", None)
+    targets = getattr(dataset, "targets", None)
+    z = getattr(dataset, "z", None)
+    t = getattr(dataset, "t", None)
+
+    if stats is None or targets is None or z is None or t is None:
+        return None
+    if not hasattr(stats, "denormalise_targets"):
+        return None
+    if not isinstance(targets, torch.Tensor):
+        return None
+
+    z_array = np.asarray(z, dtype=np.float64)
+    t_array = np.asarray(t, dtype=np.float64)
+    if z_array.ndim != 1 or t_array.ndim != 1:
+        return None
+
+    try:
+        grid = targets.view(z_array.size, t_array.size, -1).cpu().numpy()
+    except Exception:
+        return None
+
+    amplitudes = stats.denormalise_targets(grid)
+    if amplitudes.shape[-1] < 2:
+        return None
+
+    amplitudes_complex = amplitudes[..., 0] + 1j * amplitudes[..., 1]
+    _, _, mse = residual_statistics(z_array, t_array, amplitudes_complex, config)
+    return mse
+
+
 def train(
     model: nn.Module,
     dataloader: DataLoader,
@@ -46,14 +89,35 @@ def train(
     scheduler = _configure_scheduler(optimizer, config)
 
     history: Dict[str, List[float]] = {"loss": []}
+    teacher_residual_rms: Optional[float] = None
     if config.mode == "pinn":
         if dataset is None:
             raise ValueError("PINN mode requires access to the full dataset for condition sampling.")
 
-        if config.pde_variant == "ssfm":
-            loss_fn = compute_pinn_loss_components_ssfm
-        else:
-            loss_fn = compute_pinn_loss_components
+        teacher_residual_mse = _estimate_teacher_residual_mse(dataset, config)
+        if teacher_residual_mse is not None and teacher_residual_mse > 0.0:
+            teacher_residual_rms = float(teacher_residual_mse ** 0.5)
+            if config.residual_scale <= 0.0:
+                config.residual_scale = float(1.0 / teacher_residual_mse)
+                print(
+                    f"Auto-tuned residual_scale to {config.residual_scale:.3e} "
+                    f"(teacher residual RMS ~ {teacher_residual_rms:.3e})"
+                )
+            else:
+                baseline = config.residual_weight * config.residual_scale * teacher_residual_mse
+                print(
+                    f"Teacher residual RMS ~ {teacher_residual_rms:.3e}; "
+                    f"baseline weighted physics term ~ {baseline:.3e}"
+                )
+        elif config.residual_scale <= 0.0:
+            config.residual_scale = 1.0
+            print("Falling back to residual_scale=1.0 (auto calibration unavailable).")
+
+        loss_fn = (
+            compute_pinn_loss_components_ssfm
+            if config.pde_variant == "ssfm"
+            else compute_pinn_loss_components
+        )
 
         history.update(
             {
@@ -61,16 +125,28 @@ def train(
                 "initial_loss": [],
                 "boundary_loss": [],
                 "residual_loss": [],
+                "physics_scale": [],
+                "adaptive_balance": [],
             }
         )
+        if teacher_residual_rms is not None:
+            history["teacher_residual_rms"] = teacher_residual_rms
+
+    balance_state: Optional[float] = None
 
     for epoch in range(1, config.num_epochs + 1):
+        physics_scale = 1.0
+        if config.mode == "pinn" and config.residual_warmup_epochs > 0:
+            warmup = max(config.residual_warmup_epochs, 1)
+            physics_scale = min(1.0, epoch / warmup)
+
         cumulative_loss = 0.0
         cumulative_data = 0.0
         cumulative_initial = 0.0
         cumulative_boundary = 0.0
         cumulative_residual = 0.0
         step_count = 0
+        epoch_balance = 1.0
 
         for features, targets in dataloader:
             features = features.to(device)
@@ -89,17 +165,38 @@ def train(
                     predictions=predictions,
                     config=config,
                 )
+
+                adaptive_scale = 1.0
+                if getattr(config, "adaptive_residual_balance", False):
+                    eps = 1e-12
+                    ratio = (components.data.item() + eps) / (components.residual.item() + eps)
+                    smoothing = getattr(config, "adaptive_balance_smoothing", 0.1)
+                    if balance_state is None:
+                        balance_state = ratio
+                    else:
+                        balance_state = (1.0 - smoothing) * balance_state + smoothing * ratio
+                    adaptive_scale = balance_state ** 0.5
+                    min_scale = getattr(config, "adaptive_balance_min", 0.1)
+                    max_scale = getattr(config, "adaptive_balance_max", 10.0)
+                    adaptive_scale = float(max(min(adaptive_scale, max_scale), min_scale))
+
+                physics_effective = physics_scale * adaptive_scale
+                epoch_balance = adaptive_scale
+
                 total_loss = (
                     config.data_weight * components.data
-                    + config.initial_weight * components.initial
-                    + config.boundary_weight * components.boundary
-                    + config.residual_weight * components.residual
+                    + physics_effective
+                    * (
+                        config.initial_weight * components.initial
+                        + config.boundary_weight * components.boundary
+                        + config.residual_weight * components.residual
+                    )
                 )
 
                 cumulative_data += components.data.item()
-                cumulative_initial += components.initial.item()
-                cumulative_boundary += components.boundary.item()
-                cumulative_residual += components.residual.item()
+                cumulative_initial += physics_effective * components.initial.item()
+                cumulative_boundary += physics_effective * components.boundary.item()
+                cumulative_residual += physics_effective * components.residual.item()
             else:
                 cumulative_data += data_loss.item()
 
@@ -132,10 +229,13 @@ def train(
             history["initial_loss"].append(avg_initial)
             history["boundary_loss"].append(avg_boundary)
             history["residual_loss"].append(avg_residual)
+            history["physics_scale"].append(physics_scale)
+            history["adaptive_balance"].append(epoch_balance)
 
             message += (
                 f" | data: {avg_data:.3e} ic: {avg_initial:.3e} "
-                f"bc: {avg_boundary:.3e} res: {avg_residual:.3e}"
+                f"bc: {avg_boundary:.3e} res: {avg_residual:.3e} "
+                f"w: {physics_scale:.2f} bal: {epoch_balance:.2f}"
             )
         else:
             history.setdefault("data_loss", []).append(cumulative_data / max(step_count, 1))

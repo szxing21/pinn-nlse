@@ -10,11 +10,11 @@ PDEVariant = Literal["standard", "ssfm"]
 class TrainingConfig:
     """Hyperparameters controlling optimisation."""
 
-    batch_size: int = 128
-    learning_rate: float = 5e-3
+    batch_size: int = 256
+    learning_rate: float = 3e-3
     num_epochs: int = 200
     device: DeviceChoice = "auto"
-    print_every: int = 20
+    print_every: int = 5
     save_path: str = "checkpoints/pinn_mlp.pt"
     num_workers: int = 0
     pin_memory: bool = False
@@ -26,13 +26,29 @@ class TrainingConfig:
     # Loss weights and sampling for PINN mode
     data_weight: float = 1.0
     initial_weight: float = 1.0
-    boundary_weight: float = 0
-    residual_weight: float = 1.0
-    residual_scale: float = 1.0e4
+    boundary_weight: float = 0.0
+    residual_weight: float = 0.5
+    residual_warmup_epochs: int = 50
+    residual_scale: float = 0.0  # <=0 enables automatic scaling from teacher residual
     ic_samples: int = 256
     bc_samples: int = 256
     residual_samples: int = 2048
     gradient_noise_snr_db: float = 80.0
+
+    # Fourier feature encoding
+    fourier_features: int = 32
+    fourier_scale: float = 8.0
+
+    # Optional supervised pre-training before PINN fine-tuning
+    pretrain_epochs: int = 0
+    pretrain_learning_rate: float = 3e-3
+
+    # Adaptive balancing of physics/data losses
+    adaptive_residual_balance: bool = False
+    adaptive_balance_smoothing: float = 0.1
+    adaptive_balance_min: float = 0.1
+    adaptive_balance_max: float = 10.0
+
     pde_variant: PDEVariant = "ssfm"
 
     # PDE parameters expressed in ps/km units

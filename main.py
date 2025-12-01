@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from dataclasses import replace
 
 import argparse
 from typing import Sequence
@@ -41,7 +42,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--hidden",
         type=parse_hidden_layers,
-        default=parse_hidden_layers("32,32,32,32"),
+        default=parse_hidden_layers("128,128,128,128"),
         help="Comma-separated hidden layer widths.",
     )
     parser.add_argument("--device", choices=["cpu", "cuda", "auto"], default=default_config.device, help="Computation device preference.")
@@ -104,10 +105,19 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="Weight applied to PDE residual loss in PINN mode.",
     )
     parser.add_argument(
+        "--residual-warmup-epochs",
+        type=int,
+        default=default_config.residual_warmup_epochs,
+        help="Epochs to linearly ramp physics losses (0 disables).",
+    )
+    parser.add_argument(
         "--residual-scale",
         type=float,
         default=default_config.residual_scale,
-        help="Optional multiplier applied to residual loss before weighting.",
+        help=(
+            "Scaling factor applied to the PDE residual. "
+            "Set <= 0 to auto-calibrate from teacher residual statistics."
+        ),
     )
     parser.add_argument(
         "--ic-samples",
@@ -132,6 +142,55 @@ def build_argument_parser() -> argparse.ArgumentParser:
         type=float,
         default=default_config.gradient_noise_snr_db,
         help="Optional SNR (dB) for gradient noise injection when evaluating residuals.",
+    )
+    parser.add_argument(
+        "--fourier-features",
+        type=int,
+        default=default_config.fourier_features,
+        help="Number of random Fourier feature pairs appended to the inputs (0 disables).",
+    )
+    parser.add_argument(
+        "--fourier-scale",
+        type=float,
+        default=default_config.fourier_scale,
+        help="Standard deviation of Fourier feature frequencies.",
+    )
+    parser.add_argument(
+        "--pretrain-epochs",
+        type=int,
+        default=default_config.pretrain_epochs,
+        help="Optional supervised warm-up epochs before PINN fine-tuning.",
+    )
+    parser.add_argument(
+        "--pretrain-learning-rate",
+        type=float,
+        default=default_config.pretrain_learning_rate,
+        help="Learning rate used during the supervised warm-up stage.",
+    )
+    parser.add_argument(
+        "--disable-adaptive-residual-balance",
+        action="store_false",
+        dest="adaptive_residual_balance",
+        default=default_config.adaptive_residual_balance,
+        help="Disable adaptive balancing between data and physics losses.",
+    )
+    parser.add_argument(
+        "--adaptive-balance-smoothing",
+        type=float,
+        default=default_config.adaptive_balance_smoothing,
+        help="Smoothing factor (0-1) for adaptive physics weighting updates.",
+    )
+    parser.add_argument(
+        "--adaptive-balance-min",
+        type=float,
+        default=default_config.adaptive_balance_min,
+        help="Lower clip for adaptive physics weighting.",
+    )
+    parser.add_argument(
+        "--adaptive-balance-max",
+        type=float,
+        default=default_config.adaptive_balance_max,
+        help="Upper clip for adaptive physics weighting.",
     )
     parser.add_argument(
         "--alpha",
@@ -171,6 +230,33 @@ def build_argument_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_argument_parser().parse_args()
 
+    default_config = TrainingConfig()
+    is_tuned_run = args.residual_warmup_epochs > 0
+    uses_fourier = args.fourier_features > 0
+
+    save_path = args.save_path
+    if args.save_path == default_config.save_path:
+        save_path_path = Path(save_path)
+        suffix = save_path_path.suffix
+        base_stem = save_path_path.stem
+        stem_parts = [base_stem]
+        if uses_fourier and 'fourier' not in base_stem:
+            stem_parts.append('fourier')
+        if is_tuned_run and 'tune' not in base_stem:
+            stem_parts.append('tune')
+        new_stem = '_'.join(stem_parts)
+        save_path = str(save_path_path.with_name(f"{new_stem}{suffix}"))
+
+    if args.fig_output_dir == DEFAULT_FIG_DIR:
+        subdir = args.mode
+        if uses_fourier:
+            subdir += '_fourier'
+        if is_tuned_run:
+            subdir += '_tune'
+        fig_output_dir = Path(DEFAULT_FIG_DIR) / subdir
+    else:
+        fig_output_dir = Path(args.fig_output_dir)
+
     dataset = PulseEvolutionDataset(args.data_path)
     target_dim = dataset[0][1].numel()
 
@@ -180,7 +266,7 @@ def main() -> None:
         num_epochs=args.epochs,
         device=args.device,
         print_every=args.print_every,
-        save_path=args.save_path,
+        save_path=save_path,
         num_workers=args.num_workers,
         pin_memory=args.pin_memory,
         max_grad_norm=args.max_grad_norm,
@@ -191,11 +277,20 @@ def main() -> None:
         initial_weight=args.initial_weight,
         boundary_weight=args.boundary_weight,
         residual_weight=args.residual_weight,
+        residual_warmup_epochs=args.residual_warmup_epochs,
         residual_scale=args.residual_scale,
         ic_samples=args.ic_samples,
         bc_samples=args.bc_samples,
         residual_samples=args.residual_samples,
         gradient_noise_snr_db=args.gradient_noise_snr_db,
+        fourier_features=args.fourier_features,
+        fourier_scale=args.fourier_scale,
+        pretrain_epochs=args.pretrain_epochs,
+        pretrain_learning_rate=args.pretrain_learning_rate,
+        adaptive_residual_balance=args.adaptive_residual_balance,
+        adaptive_balance_smoothing=args.adaptive_balance_smoothing,
+        adaptive_balance_min=args.adaptive_balance_min,
+        adaptive_balance_max=args.adaptive_balance_max,
         pde_variant=args.pde_variant,
         alpha=args.alpha,
         beta2=args.beta2,
@@ -210,13 +305,31 @@ def main() -> None:
         pin_memory=config.pin_memory,
     )
 
-    model = SimplePINN(input_dim=2, hidden_layers=args.hidden, output_dim=target_dim, activation=torch.nn.Tanh())
+    model = SimplePINN(
+        input_dim=2,
+        hidden_layers=args.hidden,
+        output_dim=target_dim,
+        activation=torch.nn.Tanh(),
+        fourier_features=args.fourier_features,
+        fourier_sigma=args.fourier_scale,
+    )
 
+    if config.mode == "pinn" and config.pretrain_epochs > 0:
+        print(f"Pretraining in supervised mode for {config.pretrain_epochs} epochs...")
+        pretrain_config = replace(
+            config,
+            mode="mlp",
+            num_epochs=config.pretrain_epochs,
+            learning_rate=config.pretrain_learning_rate,
+            residual_weight=0.0,
+            residual_scale=0.0,
+            residual_warmup_epochs=0,
+            save_path="",
+        )
+        train(model, dataloader, pretrain_config, dataset=dataset)
+        print("Pretraining stage complete. Switching to PINN fine-tuning.")
     history = train(model, dataloader, config, dataset=dataset)
 
-    fig_output_dir = Path(args.fig_output_dir)
-    if args.fig_output_dir == DEFAULT_FIG_DIR:
-        fig_output_dir = fig_output_dir / args.mode
     fig_output_dir.mkdir(parents=True, exist_ok=True)
 
     loss_path = plot_loss_curve(history.get("loss", []), output_dir=fig_output_dir)
@@ -225,7 +338,7 @@ def main() -> None:
 
     generate_visualizations(
         data_path=args.data_path,
-        checkpoint_path=args.save_path,
+        checkpoint_path=save_path,
         output_dir=fig_output_dir,
         device=args.device,
     )

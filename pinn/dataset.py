@@ -134,7 +134,12 @@ def load_pulse_evolution(
     mat = scipy.io.loadmat(mat_path)
 
     try:
-        t = np.asarray(mat["T_ps"], dtype=np.float32).reshape(-1)
+        t_raw = np.asarray(mat["T_ps"], dtype=np.float64).reshape(-1)
+        # Convert to picoseconds if the dataset was exported in seconds.
+        if np.max(np.abs(t_raw)) < 1e-6:
+            t = (t_raw * 1.0e12).astype(np.float32)
+        else:
+            t = t_raw.astype(np.float32)
         z = np.asarray(mat["Z"], dtype=np.float32).reshape(-1)
         tensor = np.asarray(mat["Tensor"], dtype=np.float32)
     except KeyError as exc:  # pragma: no cover - defensive
