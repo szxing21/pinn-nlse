@@ -14,7 +14,7 @@ class TrainingConfig:
 
     # Network architecture
     hidden_layers: tuple[int, ...] = (128, 128, 128, 128)
-    external_layers: tuple[bool, ...] = (1,1,0,0,0)  # broadcast or per-linear-layer flags (hidden + output)
+    external_layers: tuple[bool, ...] = (1,0,0,0,0)  # broadcast or per-linear-layer flags (hidden + output)
     external_snr_db: float = 30.0
 
     batch_size: int = 256

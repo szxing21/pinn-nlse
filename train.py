@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Dict, List, Optional
+import time
 
 import numpy as np
 import torch
@@ -83,6 +84,8 @@ def train(
     device = _resolve_device(config.device)
     print(f"Using device: {device}")
     model = model.to(device)
+
+    start_time = time.time()
 
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
@@ -218,6 +221,11 @@ def train(
             scheduler.step(average_loss)
 
         message = f"Epoch {epoch:04d}/{config.num_epochs} | Loss: {average_loss:.6e}"
+        elapsed = time.time() - start_time
+        avg_epoch_time = elapsed / max(epoch, 1)
+        remaining = max(config.num_epochs - epoch, 0)
+        eta_seconds = avg_epoch_time * remaining
+        eta_str = time.strftime("%H:%M:%S", time.gmtime(eta_seconds))
 
         if config.mode == "pinn":
             avg_data = cumulative_data / max(step_count, 1)
@@ -239,6 +247,8 @@ def train(
             )
         else:
             history.setdefault("data_loss", []).append(cumulative_data / max(step_count, 1))
+
+        message += f" | ETA: {eta_str}"
 
         if epoch % config.print_every == 0 or epoch == config.num_epochs:
             print(message, flush=True)
