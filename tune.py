@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import argparse
-import random
 from dataclasses import replace
 from typing import List, Sequence, Tuple
+
+import optuna
 
 import torch
 from torch.utils.data import DataLoader, Subset
@@ -45,33 +46,17 @@ def evaluate_mse(model: torch.nn.Module, dataloader: DataLoader, device: torch.d
     return total / max(count, 1)
 
 
-def sample_hparams(
-    rng: random.Random,
-    *,
-    min_layers: int,
-    max_layers: int,
-    width_choices: Sequence[int],
-    fourier_choices: Sequence[int],
-    external_choices: Sequence[bool],
-) -> tuple[Tuple[int, ...], int, Tuple[bool, ...]]:
-    num_layers = rng.randint(min_layers, max_layers)
-    hidden = tuple(rng.choice(width_choices) for _ in range(num_layers))
-    ff = rng.choice(fourier_choices)
-    ext = (rng.choice(external_choices),)  # broadcast flag for all linear layers
-    return hidden, ff, ext
-
-
 def build_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Lightweight hyperparameter search over network depth/width.")
     parser.add_argument("--data-path", default="data/pulse_evolution.mat", help="Path to the MATLAB tensor.")
-    parser.add_argument("--trials", type=int, default=5, help="Number of random trials.")
-    parser.add_argument("--epochs", type=int, default=30, help="Epochs per trial (keep small for quick sweeps).")
+    parser.add_argument("--trials", type=int, default=10, help="Number of Optuna trials.")
+    parser.add_argument("--epochs", type=int, default=30, help="Epochs per trial (keep small for quick sweeps / pruning).")
     parser.add_argument("--val-fraction", type=float, default=0.1, help="Validation split fraction.")
     parser.add_argument("--device", choices=["cpu", "cuda", "auto"], default="auto", help="Computation device.")
     parser.add_argument("--mode", choices=["mlp", "pinn"], default="pinn", help="Training mode for trials.")
     parser.add_argument("--seed", type=int, default=0, help="Random seed for reproducibility.")
     parser.add_argument("--min-layers", type=int, default=2, help="Minimum hidden layers.")
-    parser.add_argument("--max-layers", type=int, default=5, help="Maximum hidden layers.")
+    parser.add_argument("--max-layers", type=int, default=4, help="Maximum hidden layers.")
     parser.add_argument("--widths", default="64,128,256", help="Comma-separated choices for hidden widths.")
     parser.add_argument("--fourier", default="0,16,32", help="Comma-separated choices for Fourier features.")
     parser.add_argument("--external", default="0", help="Comma-separated choices for using external layers (broadcast). Default 0 disables external layers during tuning.")
@@ -99,7 +84,6 @@ def parse_bool_list(text: str) -> List[bool]:
 
 def main() -> None:
     args = build_argparser().parse_args()
-    rng = random.Random(args.seed)
 
     dataset = PulseEvolutionDataset(args.data_path)
     train_ds, val_ds = split_dataset(dataset, val_fraction=args.val_fraction, seed=args.seed)
@@ -111,17 +95,12 @@ def main() -> None:
     default_cfg = TrainingConfig()
     device_choice = args.device
 
-    best = {"val_mse": float("inf"), "trial": -1, "hidden": None, "fourier": None, "external": None}
-
-    for trial in range(1, args.trials + 1):
-        hidden, ff, ext = sample_hparams(
-            rng,
-            min_layers=args.min_layers,
-            max_layers=args.max_layers,
-            width_choices=width_choices,
-            fourier_choices=fourier_choices,
-            external_choices=external_choices,
-        )
+    def objective(trial: optuna.Trial) -> float:
+        num_layers = trial.suggest_int("layers", args.min_layers, args.max_layers)
+        hidden = tuple(trial.suggest_categorical(f"w{i}", width_choices) for i in range(num_layers))
+        ff = trial.suggest_categorical("fourier_features", fourier_choices)
+        ext_flag = trial.suggest_categorical("external", external_choices)
+        ext = (bool(ext_flag),)  # broadcast
 
         cfg = replace(
             default_cfg,
@@ -159,24 +138,31 @@ def main() -> None:
             shuffle=False,
         )
 
-        print(f"[Trial {trial}/{args.trials}] hidden={hidden}, fourier={ff}, external={ext}")
-        history = train(model, train_loader, cfg, dataset=dataset)
+        print(f"[Trial {trial.number+1}/{args.trials}] hidden={hidden}, fourier={ff}, external={ext}")
+        train(model, train_loader, cfg, dataset=dataset)
 
         device = torch.device("cuda" if device_choice == "cuda" and torch.cuda.is_available() else "cpu") if device_choice != "cpu" else torch.device("cpu")
         val_mse = evaluate_mse(model.to(device), val_loader, device)
-        print(f"[Trial {trial}] val MSE: {val_mse:.4e}")
+        trial.report(val_mse, step=cfg.num_epochs)
+        return val_mse
 
-        if val_mse < best["val_mse"]:
-            best.update(
-                {"val_mse": val_mse, "trial": trial, "hidden": hidden, "fourier": ff, "external": ext}
-            )
+    sampler = optuna.samplers.TPESampler(seed=args.seed)
+    pruner = optuna.pruners.SuccessiveHalvingPruner(min_resource=5, reduction_factor=2, min_early_stopping_rate=0)
+    study = optuna.create_study(direction="minimize", sampler=sampler, pruner=pruner)
+    study.optimize(objective, n_trials=args.trials)
 
+    best = study.best_trial
+    params = best.params
+    layers = params.get("layers", 0)
+    hidden_best = [params[f"w{i}"] for i in range(layers)] if layers else []
+    fourier_best = params.get("fourier_features", None)
+    external_best = params.get("external", None)
     print("\nBest configuration:")
-    print(f"  trial      : {best['trial']}")
-    print(f"  hidden     : {best['hidden']}")
-    print(f"  fourier    : {best['fourier']}")
-    print(f"  external   : {best['external']}")
-    print(f"  val MSE    : {best['val_mse']:.4e}")
+    print(f"  trial      : {best.number}")
+    print(f"  hidden     : {hidden_best}")
+    print(f"  fourier    : {fourier_best}")
+    print(f"  external   : {external_best}")
+    print(f"  val MSE    : {best.value:.4e}")
 
 
 if __name__ == "__main__":
