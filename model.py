@@ -4,6 +4,60 @@ from typing import Mapping, Sequence
 
 import torch
 from torch import nn
+import torch.nn.functional as F
+
+
+def _hardware_linear(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor | None = None,
+    *,
+    snr_db: float = 30.0,
+) -> torch.Tensor:
+    """
+    Placeholder for a hardware-backed 4x4 matmul pipeline.
+
+    Currently simulates hardware by running a standard linear layer, then
+    injecting Gaussian noise to match a target SNR (in dB) based on the output
+    power. Replace the linear computation with your device calls when ready.
+    """
+
+    y = F.linear(x, weight, bias)
+
+    # Additive noise calibrated by the measured output power.
+    power = y.pow(2).mean()
+    if torch.isfinite(power) and power > torch.finfo(y.dtype).eps:
+        noise_power = power / (10.0 ** (snr_db / 10.0))
+        noise_std = noise_power.sqrt()
+        y = y + torch.randn_like(y) * noise_std
+    return y
+
+
+class ExternalLinear(nn.Module):
+    """
+    Linear layer whose forward values come from (simulated) hardware, while
+    gradients are preserved via the software path.
+    """
+
+    def __init__(self, in_features: int, out_features: int, bias: bool = True, *, snr_db: float = 30.0) -> None:
+        super().__init__()
+        self.weight = nn.Parameter(torch.empty(out_features, in_features))
+        self.bias = nn.Parameter(torch.empty(out_features)) if bias else None
+        self.snr_db = snr_db
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        nn.init.xavier_uniform_(self.weight)
+        if self.bias is not None:
+            nn.init.uniform_(self.bias, -0.05, 0.05)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Software path builds the autograd graph.
+        y_model = F.linear(x, self.weight, self.bias)
+        # Hardware (simulated) path provides the numerical output with noise.
+        y_hw = _hardware_linear(x, self.weight, self.bias, snr_db=self.snr_db)
+        # Preserve gradients from y_model, but use y_hw values.
+        return y_hw.detach() + (y_model - y_model.detach())
 
 
 class SimplePINN(nn.Module):
@@ -19,6 +73,8 @@ class SimplePINN(nn.Module):
         fourier_features: int = 0,
         fourier_sigma: float = 10.0,
         generator: torch.Generator | None = None,
+        external_layers: Sequence[bool] | None = None,
+        external_snr_db: float = 30.0,
     ) -> None:
         super().__init__()
         activation = activation or nn.Tanh()
@@ -34,6 +90,7 @@ class SimplePINN(nn.Module):
         self.activation_template = activation
         self.fourier_features = int(fourier_features)
         self.fourier_sigma = float(fourier_sigma)
+        self.external_snr_db = float(external_snr_db)
 
         if self.fourier_features > 0:
             B = torch.randn(input_dim, self.fourier_features, generator=generator) * self.fourier_sigma
@@ -42,14 +99,32 @@ class SimplePINN(nn.Module):
             self.register_buffer("fourier_B", None)
 
         effective_input_dim = input_dim + 2 * self.fourier_features
+        num_linear_layers = len(hidden_layers) + 1  # hidden + output
+        if external_layers is None:
+            ext_flags = [True] + [False] * (num_linear_layers - 1)
+        else:
+            ext_flags = list(external_layers)
+            if len(ext_flags) == 1:
+                ext_flags = ext_flags * num_linear_layers
+            elif len(ext_flags) != num_linear_layers:
+                raise ValueError(
+                    f"external_layers length must be 1 or {num_linear_layers} (hidden layers + output); got {len(ext_flags)}"
+                )
 
         layers: list[nn.Module] = []
         prev_dim = effective_input_dim
-        for width in hidden_layers:
-            layers.append(nn.Linear(prev_dim, width))
+        for idx, width in enumerate(hidden_layers):
+            if ext_flags[idx]:
+                layers.append(ExternalLinear(prev_dim, width, bias=True, snr_db=self.external_snr_db))
+            else:
+                layers.append(nn.Linear(prev_dim, width))
             layers.append(_clone_activation(activation))
             prev_dim = width
-        layers.append(nn.Linear(prev_dim, output_dim))
+        # Output layer
+        if ext_flags[-1]:
+            layers.append(ExternalLinear(prev_dim, output_dim, bias=True, snr_db=self.external_snr_db))
+        else:
+            layers.append(nn.Linear(prev_dim, output_dim))
 
         self.network = nn.Sequential(*layers)
         self._initialise()
@@ -60,6 +135,8 @@ class SimplePINN(nn.Module):
         state_dict: Mapping[str, torch.Tensor],
         *,
         activation: nn.Module | None = None,
+        external_layers: Sequence[bool] | None = None,
+        external_snr_db: float = 30.0,
     ) -> "SimplePINN":
         activation = activation or nn.Tanh()
 
@@ -97,6 +174,8 @@ class SimplePINN(nn.Module):
             activation=activation,
             fourier_features=fourier_features,
             fourier_sigma=1.0,
+            external_layers=external_layers,
+            external_snr_db=external_snr_db,
         )
         model.load_state_dict(state_dict)
         return model
@@ -116,9 +195,10 @@ class SimplePINN(nn.Module):
 
     def _initialise(self) -> None:
         for module in self.network:
-            if isinstance(module, nn.Linear):
+            if isinstance(module, (nn.Linear, ExternalLinear)):
                 nn.init.xavier_uniform_(module.weight)
-                nn.init.uniform_(module.bias, -0.05, 0.05)
+                if module.bias is not None:
+                    nn.init.uniform_(module.bias, -0.05, 0.05)
 
 
 def _clone_activation(template: nn.Module) -> nn.Module:

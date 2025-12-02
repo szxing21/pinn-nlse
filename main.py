@@ -32,6 +32,21 @@ def parse_hidden_layers(spec: str) -> Sequence[int]:
     return layers
 
 
+def parse_external_layers(spec: str) -> Sequence[bool]:
+    tokens = [token.strip().lower() for token in spec.split(",") if token.strip()]
+    if not tokens:
+        raise argparse.ArgumentTypeError("External layer specification must contain at least one flag.")
+    result: list[bool] = []
+    for tok in tokens:
+        if tok in ("1", "true", "t", "yes", "y"):
+            result.append(True)
+        elif tok in ("0", "false", "f", "no", "n"):
+            result.append(False)
+        else:
+            raise argparse.ArgumentTypeError(f"Invalid external layer flag: {tok}")
+    return result
+
+
 def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train a baseline MLP PINN on the pulse evolution dataset.")
     default_config = TrainingConfig()
@@ -42,8 +57,14 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--hidden",
         type=parse_hidden_layers,
-        default=parse_hidden_layers("128,128,128,128"),
+        default=parse_hidden_layers(",".join(str(w) for w in default_config.hidden_layers)),
         help="Comma-separated hidden layer widths.",
+    )
+    parser.add_argument(
+        "--external-layers",
+        type=parse_external_layers,
+        default=parse_external_layers(",".join("1" if f else "0" for f in default_config.external_layers)),
+        help="Comma-separated 0/1 flags for using external layers (length 1 to broadcast, or match hidden+output).",
     )
     parser.add_argument("--device", choices=["cpu", "cuda", "auto"], default=default_config.device, help="Computation device preference.")
     parser.add_argument("--print-every", type=int, default=default_config.print_every, help="Epoch interval for logging losses.")
@@ -291,6 +312,8 @@ def main() -> None:
         adaptive_balance_smoothing=args.adaptive_balance_smoothing,
         adaptive_balance_min=args.adaptive_balance_min,
         adaptive_balance_max=args.adaptive_balance_max,
+        hidden_layers=tuple(args.hidden),
+        external_layers=tuple(args.external_layers),
         pde_variant=args.pde_variant,
         alpha=args.alpha,
         beta2=args.beta2,
@@ -312,7 +335,10 @@ def main() -> None:
         activation=torch.nn.Tanh(),
         fourier_features=args.fourier_features,
         fourier_sigma=args.fourier_scale,
+        external_layers=args.external_layers,
+        external_snr_db=default_config.external_snr_db,
     )
+    print("Model architecture:\n", model)
 
     if config.mode == "pinn" and config.pretrain_epochs > 0:
         print(f"Pretraining in supervised mode for {config.pretrain_epochs} epochs...")

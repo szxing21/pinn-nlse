@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Literal
 
@@ -9,6 +11,11 @@ PDEVariant = Literal["standard", "ssfm"]
 @dataclass
 class TrainingConfig:
     """Hyperparameters controlling optimisation."""
+
+    # Network architecture
+    hidden_layers: tuple[int, ...] = (128, 128, 128, 128)
+    external_layers: tuple[bool, ...] = (1,1,0,0,0)  # broadcast or per-linear-layer flags (hidden + output)
+    external_snr_db: float = 30.0
 
     batch_size: int = 256
     learning_rate: float = 3e-3
