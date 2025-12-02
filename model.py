@@ -13,16 +13,42 @@ def _hardware_linear(
     bias: torch.Tensor | None = None,
     *,
     snr_db: float = 30.0,
+    block: int = 4,
 ) -> torch.Tensor:
     """
     Placeholder for a hardware-backed 4x4 matmul pipeline.
 
-    Currently simulates hardware by running a standard linear layer, then
-    injecting Gaussian noise to match a target SNR (in dB) based on the output
-    power. Replace the linear computation with your device calls when ready.
+    Performs software tiling into 4x4 blocks, simulating the hardware MVM with
+    a standard matmul + optional noise. Replace the marked section with your
+    actual hardware call (e.g., run_hw_mvm) to integrate the device.
     """
 
-    y = F.linear(x, weight, bias)
+    B, in_dim = x.shape
+    out_dim, _ = weight.shape
+
+    pad_in = (block - in_dim % block) % block
+    pad_out = (block - out_dim % block) % block
+
+    x_pad = F.pad(x, (0, pad_in))
+    W_pad = F.pad(weight, (0, pad_in, 0, pad_out))
+    out_pad = out_dim + pad_out
+
+    y_hw = x_pad.new_zeros(B, out_pad)
+
+    for o in range(0, out_pad, block):
+        acc = x_pad.new_zeros(B, block)
+        for i in range(0, in_dim + pad_in, block):
+            W_tile = W_pad[o:o + block, i:i + block]          # [4,4]
+            X_tile = x_pad[:, i:i + block].T                  # [4,B]
+            # TODO: replace this matmul with your hardware call:
+            # Y_tile = run_hw_mvm(X_tile, W_tile, zeros(4,1))  # [4,B]
+            Y_tile = W_tile @ X_tile                          # software simulation
+            acc = acc + Y_tile.T                              # [B,4]
+        y_hw[:, o:o + block] = acc
+
+    y = y_hw[:, :out_dim]
+    if bias is not None:
+        y = y + bias
 
     # Additive noise calibrated by the measured output power.
     power = y.pow(2).mean()
