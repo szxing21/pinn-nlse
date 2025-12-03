@@ -20,6 +20,29 @@ class PINNLossComponents:
     gradients: Optional[GradientResult]
 
 
+def _add_noise_snr(
+    tensor: torch.Tensor,
+    snr_db: float | None,
+    *,
+    preserve_grad: bool = True,
+    eps: float = 1e-12,
+) -> torch.Tensor:
+    """Additive white noise with target SNR (dB). Optionally preserve gradients from the clean tensor."""
+
+    if snr_db is None or snr_db <= 0:
+        return tensor
+    power = tensor.pow(2).mean()
+    if not torch.isfinite(power) or power <= eps:
+        return tensor
+    noise_power = power / (10.0 ** (snr_db / 10.0))
+    noise_std = noise_power.sqrt()
+    noisy = tensor + torch.randn_like(tensor) * noise_std
+    if preserve_grad:
+        # Keep gradients flowing through the clean tensor while using noisy values forward.
+        return noisy.detach() + (tensor - tensor.detach())
+    return noisy
+
+
 def _compute_pinn_components(
     model: torch.nn.Module,
     dataset: PulseEvolutionDataset,
@@ -162,6 +185,10 @@ def _residual_loss_standard(
         create_graph=True,
     )[0]
 
+    noise_snr = getattr(config, "gradient_noise_snr_db", None)
+    grad_real = _add_noise_snr(grad_real, noise_snr, preserve_grad=True)
+    grad_imag = _add_noise_snr(grad_imag, noise_snr, preserve_grad=True)
+
     per_km = 1.0e3
     dA_r_dz = grad_real[:, 0:1] * per_km
     dA_r_dt = grad_real[:, 1:2]
@@ -276,6 +303,10 @@ def _residual_loss_ssfm(
         retain_graph=True,
         create_graph=True,
     )[0]
+
+    noise_snr = getattr(config, "gradient_noise_snr_db", None)
+    grad_real = _add_noise_snr(grad_real, noise_snr, preserve_grad=True)
+    grad_imag = _add_noise_snr(grad_imag, noise_snr, preserve_grad=True)
 
     per_km = 1.0e3
     dA_r_dz = grad_real[:, 0:1] * per_km

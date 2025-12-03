@@ -13,8 +13,8 @@ class TrainingConfig:
     """Hyperparameters controlling optimisation."""
 
     # Network architecture
-    hidden_layers: tuple[int, ...] = (128, 128, 128, 128)
-    external_layers: tuple[bool, ...] = (1,0,0,0,0)  # broadcast or per-linear-layer flags (hidden + output)
+    hidden_layers: tuple[int, ...] = (256, 256, 128)
+    external_layers: tuple[bool, ...] = (0,0,0,0)  # broadcast or per-linear-layer flags (hidden + output)
     external_snr_db: float = 30.0
 
     batch_size: int = 256
@@ -28,7 +28,7 @@ class TrainingConfig:
     max_grad_norm: float = 1.0
     scheduler_patience: int = 15
     scheduler_factor: float = 0.5
-    mode: ModeChoice = "pinn"
+    mode: ModeChoice = "mlp"
 
     # Loss weights and sampling for PINN mode
     data_weight: float = 1.0
@@ -40,7 +40,7 @@ class TrainingConfig:
     ic_samples: int = 256
     bc_samples: int = 256
     residual_samples: int = 2048
-    gradient_noise_snr_db: float = 80.0
+    gradient_noise_snr_db: float = 30.0
 
     # Fourier feature encoding
     fourier_features: int = 32

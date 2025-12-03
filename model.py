@@ -19,8 +19,9 @@ def _hardware_linear(
     Placeholder for a hardware-backed 4x4 matmul pipeline.
 
     Performs software tiling into 4x4 blocks, simulating the hardware MVM with
-    a standard matmul + optional noise. Replace the marked section with your
-    actual hardware call (e.g., run_hw_mvm) to integrate the device.
+    per-block matmul + optional noise. Replace the marked section with your
+    actual hardware call (e.g., run_hw_mvm) to integrate the device; the loop
+    matches a “one weight matrix at a time” interface.
     """
 
     B, in_dim = x.shape
@@ -33,18 +34,25 @@ def _hardware_linear(
     W_pad = F.pad(weight, (0, pad_in, 0, pad_out))
     out_pad = out_dim + pad_out
 
+    in_blocks = (in_dim + pad_in) // block
+    out_blocks = out_pad // block
+
+    # Pre-split to reduce slicing overhead in the loop.
+    W_blocks = W_pad.view(out_blocks, in_blocks, block, block)  # [O,I,4,4]
+    X_blocks = x_pad.view(B, in_blocks, block)                  # [B,I,4]
+
     y_hw = x_pad.new_zeros(B, out_pad)
 
-    for o in range(0, out_pad, block):
+    for o in range(out_blocks):
         acc = x_pad.new_zeros(B, block)
-        for i in range(0, in_dim + pad_in, block):
-            W_tile = W_pad[o:o + block, i:i + block]          # [4,4]
-            X_tile = x_pad[:, i:i + block].T                  # [4,B]
+        for i in range(in_blocks):
+            W_tile = W_blocks[o, i]                # [4,4]
+            X_tile = X_blocks[:, i, :]             # [B,4]
             # TODO: replace this matmul with your hardware call:
-            # Y_tile = run_hw_mvm(X_tile, W_tile, zeros(4,1))  # [4,B]
-            Y_tile = W_tile @ X_tile                          # software simulation
-            acc = acc + Y_tile.T                              # [B,4]
-        y_hw[:, o:o + block] = acc
+            # Y_tile_T = run_hw_mvm(X_tile.T, W_tile, zeros(4,1))  # returns [4,B]
+            Y_tile = X_tile @ W_tile.T             # [B,4] software simulation
+            acc = acc + Y_tile
+        y_hw[:, o * block:(o + 1) * block] = acc
 
     y = y_hw[:, :out_dim]
     if bias is not None:
