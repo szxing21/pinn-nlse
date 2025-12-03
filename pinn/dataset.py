@@ -33,8 +33,11 @@ class PulseEvolutionDataset(Dataset):
         *,
         dtype: torch.dtype = torch.float32,
         normalise: bool = True,
+        z_stride: int = 1,
     ) -> None:
         payload = load_pulse_evolution(mat_path, normalise=normalise)
+        if z_stride is not None and z_stride > 1:
+            payload = self._subsample_z(payload, z_stride)
         self._inputs = torch.from_numpy(payload["inputs"]).to(dtype)
         self._targets = torch.from_numpy(payload["targets"]).to(dtype)
 
@@ -121,6 +124,32 @@ class PulseEvolutionDataset(Dataset):
         interior_indices = torch.nonzero(interior_mask, as_tuple=True)[0]
 
         return initial_indices, boundary_indices, interior_indices
+
+    def _subsample_z(self, payload: Dict[str, np.ndarray | NormalisationStats], stride: int):
+        """Keep every `stride`-th z-slice; t axis unchanged. Stats stay from full data."""
+
+        inputs = np.asarray(payload["inputs"])
+        targets = np.asarray(payload["targets"])
+        z = np.asarray(payload["z"])
+        t = np.asarray(payload["t"])
+
+        nz = z.shape[0]
+        nt = t.shape[0]
+        feature_dim = targets.shape[1]
+        # Inputs are flattened meshgrid; reshape to [nz, nt, 2]
+        inputs_grid = inputs.reshape(nz, nt, 2)
+        targets_grid = targets.reshape(nz, nt, feature_dim)
+
+        z_idx = np.arange(0, nz, stride, dtype=int)
+        inputs_sub = inputs_grid[z_idx].reshape(-1, 2)
+        targets_sub = targets_grid[z_idx].reshape(-1, feature_dim)
+        z_sub = z[z_idx]
+
+        payload["inputs"] = inputs_sub
+        payload["targets"] = targets_sub
+        payload["z"] = z_sub
+        # t and stats unchanged
+        return payload
 
 
 def load_pulse_evolution(

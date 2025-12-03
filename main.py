@@ -245,6 +245,12 @@ def build_argument_parser() -> argparse.ArgumentParser:
             "When left as the default, results go to figures/<mode>."
         ),
     )
+    parser.add_argument(
+        "--z-stride",
+        type=int,
+        default=1,
+        help="Subsample factor along z for training data (>=1; 1 keeps all).",
+    )
     return parser
 
 
@@ -278,7 +284,7 @@ def main() -> None:
     else:
         fig_output_dir = Path(args.fig_output_dir)
 
-    dataset = PulseEvolutionDataset(args.data_path)
+    dataset = PulseEvolutionDataset(args.data_path, z_stride=max(1, args.z_stride))
     target_dim = dataset[0][1].numel()
 
     config = TrainingConfig(
