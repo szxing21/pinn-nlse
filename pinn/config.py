@@ -40,10 +40,10 @@ class TrainingConfig:
     ic_samples: int = 256
     bc_samples: int = 256
     residual_samples: int = 2048
-    gradient_noise_snr_db: float = 30.0
+    gradient_noise_snr_db: float = 80.0
 
     # Fourier feature encoding
-    fourier_features: int = 32
+    fourier_features: int = 4
     fourier_scale: float = 8.0
 
     # Optional supervised pre-training before PINN fine-tuning
@@ -55,6 +55,9 @@ class TrainingConfig:
     adaptive_balance_smoothing: float = 0.1
     adaptive_balance_min: float = 0.1
     adaptive_balance_max: float = 10.0
+
+    # Data subsampling along z
+    z_stride: int = 1
 
     pde_variant: PDEVariant = "ssfm"
 
