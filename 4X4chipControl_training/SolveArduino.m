@@ -14,4 +14,4 @@ else
 end 
 end 
 
-a = arduino('COM3','Mega2560','Trace',true);
+a = arduino('COM9','Mega2560','Trace',true);

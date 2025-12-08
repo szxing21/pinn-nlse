@@ -6,7 +6,7 @@ function [a,dac] = InitArduino(bitrate)
 % dac: spi device object
 
 % Create an arduino object and include the SPI library
-a = arduino('COM3', 'Mega2560', 'Libraries', 'SPI');
+a = arduino('COM9', 'Mega2560', 'Libraries', 'SPI');
 % Create an SPI device object
 dac = device(a, 'SPIChipSelectPin', 'D53', 'BitOrder', 'msbfirst', 'SPIMode', 1,'bitrate',bitrate);
 

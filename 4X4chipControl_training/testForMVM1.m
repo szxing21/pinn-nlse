@@ -1,4 +1,4 @@
-
+clear all;
 CTool = ConvTool;
 
 rng(12)

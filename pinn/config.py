@@ -19,7 +19,7 @@ class TrainingConfig:
 
     batch_size: int = 256
     learning_rate: float = 3e-3
-    num_epochs: int = 200
+    num_epochs: int = 40
     device: DeviceChoice = "auto"
     print_every: int = 5
     save_path: str = "checkpoints/pinn_mlp.pt"
@@ -28,7 +28,7 @@ class TrainingConfig:
     max_grad_norm: float = 1.0
     scheduler_patience: int = 15
     scheduler_factor: float = 0.5
-    mode: ModeChoice = "mlp"
+    mode: ModeChoice = "pinn"
 
     # Loss weights and sampling for PINN mode
     data_weight: float = 1.0
