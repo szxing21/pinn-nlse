@@ -7,7 +7,7 @@ from typing import List, Sequence, Tuple
 import optuna
 
 import torch
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader, Subset, Sampler
 
 from model import SimplePINN
 from pinn import PulseEvolutionDataset, TrainingConfig, create_dataloader
@@ -57,9 +57,15 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=0, help="Random seed for reproducibility.")
     parser.add_argument("--min-layers", type=int, default=2, help="Minimum hidden layers.")
     parser.add_argument("--max-layers", type=int, default=3, help="Maximum hidden layers.")
-    parser.add_argument("--widths", default="64,128", help="Comma-separated choices for hidden widths.")
+    parser.add_argument("--widths", default="256", help="Comma-separated choices for hidden widths.")
     parser.add_argument("--fourier", default="32", help="Comma-separated choices for Fourier features.")
     parser.add_argument("--external", default="0", help="Comma-separated choices for using external layers (broadcast). Default 0 disables external layers during tuning.")
+    parser.add_argument("--lr-min", type=float, default=1e-4, help="Min learning rate for search (log-scale).")
+    parser.add_argument("--lr-max", type=float, default=5e-3, help="Max learning rate for search (log-scale).")
+    parser.add_argument("--res-min", type=float, default=5, help="Min residual_weight for search (log-scale).")
+    parser.add_argument("--res-max", type=float, default=20.0, help="Max residual_weight for search (log-scale).")
+    parser.add_argument("--batches", default="64,128", help="Comma-separated candidate batch sizes for search.")
+    parser.add_argument("--t-ratio", type=float, default=1.0, help="Fraction of t-points per z-slice to sample each epoch (0-1].")
     return parser
 
 
@@ -82,15 +88,56 @@ def parse_bool_list(text: str) -> List[bool]:
     return out
 
 
+def build_time_sampler(dataset, t_ratio: float) -> Sampler | None:
+    """Construct a time-subsampling sampler for PulseEvolutionDataset or its Subset."""
+
+    if not (0.0 < t_ratio < 1.0):
+        return None
+
+    from pinn.dataset import TimeSliceSampler
+
+    if isinstance(dataset, PulseEvolutionDataset):
+        return TimeSliceSampler(dataset, t_ratio)
+
+    if isinstance(dataset, Subset) and hasattr(dataset.dataset, "nt"):
+        base = dataset.dataset
+        nt = int(base.nt)
+        z_to_indices = {}
+        for idx in dataset.indices:
+            z_idx = idx // nt
+            z_to_indices.setdefault(z_idx, []).append(int(idx))
+
+        class _SubsetTimeSampler(Sampler[int]):
+            def __iter__(self):
+                import torch
+
+                chosen: list[int] = []
+                for idxs in z_to_indices.values():
+                    t_count = len(idxs)
+                    t_keep = max(1, int(round(t_count * t_ratio)))
+                    perm = torch.randperm(t_count)[:t_keep]
+                    chosen.extend([idxs[i] for i in perm])
+                perm_all = torch.randperm(len(chosen))
+                return iter([chosen[i] for i in perm_all])
+
+            def __len__(self) -> int:
+                return sum(max(1, int(round(len(v) * t_ratio))) for v in z_to_indices.values())
+
+        return _SubsetTimeSampler()
+
+    return None
+
+
 def main() -> None:
     args = build_argparser().parse_args()
 
-    dataset = PulseEvolutionDataset(args.data_path)
+    dataset = PulseEvolutionDataset(args.data_path, z_stride=TrainingConfig().z_stride)
     train_ds, val_ds = split_dataset(dataset, val_fraction=args.val_fraction, seed=args.seed)
 
     width_choices = parse_int_list(args.widths)
     fourier_choices = parse_int_list(args.fourier)
     external_choices = parse_bool_list(args.external)
+    batch_choices = parse_int_list(args.batches)
 
     default_cfg = TrainingConfig()
     device_choice = args.device
@@ -101,6 +148,9 @@ def main() -> None:
         ff = trial.suggest_categorical("fourier_features", fourier_choices)
         ext_flag = trial.suggest_categorical("external", external_choices)
         ext = (bool(ext_flag),)  # broadcast
+        lr = trial.suggest_float("learning_rate", args.lr_min, args.lr_max, log=True)
+        res_w = trial.suggest_float("residual_weight", args.res_min, args.res_max, log=True)
+        bs = trial.suggest_categorical("batch_size", batch_choices)
 
         cfg = replace(
             default_cfg,
@@ -111,6 +161,9 @@ def main() -> None:
             hidden_layers=hidden,
             fourier_features=ff,
             external_layers=ext,
+            learning_rate=lr,
+            residual_weight=res_w,
+            batch_size=bs,
         )
 
         model = SimplePINN(
@@ -124,11 +177,16 @@ def main() -> None:
             external_snr_db=cfg.external_snr_db,
         )
 
+        train_sampler = build_time_sampler(train_ds, args.t_ratio)
+        val_sampler = None  # keep full validation
+
         train_loader = create_dataloader(
             train_ds,
             batch_size=cfg.batch_size,
             num_workers=cfg.num_workers,
             pin_memory=cfg.pin_memory,
+            shuffle=True if train_sampler is None else False,
+            sampler=train_sampler,
         )
         val_loader = create_dataloader(
             val_ds,
@@ -136,6 +194,7 @@ def main() -> None:
             num_workers=cfg.num_workers,
             pin_memory=cfg.pin_memory,
             shuffle=False,
+            sampler=val_sampler,
         )
 
         print(f"[Trial {trial.number+1}/{args.trials}] hidden={hidden}, fourier={ff}, external={ext}")
@@ -157,11 +216,17 @@ def main() -> None:
     hidden_best = [params[f"w{i}"] for i in range(layers)] if layers else []
     fourier_best = params.get("fourier_features", None)
     external_best = params.get("external", None)
+    lr_best = params.get("learning_rate", None)
+    res_w_best = params.get("residual_weight", None)
+    bs_best = params.get("batch_size", None)
     print("\nBest configuration:")
     print(f"  trial      : {best.number}")
     print(f"  hidden     : {hidden_best}")
     print(f"  fourier    : {fourier_best}")
     print(f"  external   : {external_best}")
+    print(f"  lr         : {lr_best}")
+    print(f"  res_weight : {res_w_best}")
+    print(f"  batch_size : {bs_best}")
     print(f"  val MSE    : {best.value:.4e}")
 
 

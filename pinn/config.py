@@ -17,24 +17,24 @@ class TrainingConfig:
     external_layers: tuple[bool, ...] = (0,0,0,0)  # broadcast or per-linear-layer flags (hidden + output)
     external_snr_db: float = 30.0
 
-    batch_size: int = 256
-    learning_rate: float = 3e-3
-    num_epochs: int = 40
+    batch_size: int = 64
+    learning_rate: float = 1e-3
+    num_epochs: int = 100
     device: DeviceChoice = "auto"
-    print_every: int = 5
+    print_every: int = 10
     save_path: str = "checkpoints/pinn_mlp.pt"
     num_workers: int = 0
     pin_memory: bool = False
     max_grad_norm: float = 1.0
     scheduler_patience: int = 15
     scheduler_factor: float = 0.5
-    mode: ModeChoice = "mlp"
+    mode: ModeChoice = "pinn"
 
     # Loss weights and sampling for PINN mode
-    data_weight: float = 1.0
+    data_weight: float = 1
     initial_weight: float = 1.0
     boundary_weight: float = 0.0
-    residual_weight: float = 0.5
+    residual_weight: float = 11
     residual_warmup_epochs: int = 50
     residual_scale: float = 0.0  # <=0 enables automatic scaling from teacher residual
     ic_samples: int = 256
@@ -43,7 +43,7 @@ class TrainingConfig:
     gradient_noise_snr_db: float = 80.0
 
     # Fourier feature encoding
-    fourier_features: int = 32
+    fourier_features: int = 4
     fourier_scale: float = 8.0
 
     # Optional supervised pre-training before PINN fine-tuning
@@ -59,7 +59,7 @@ class TrainingConfig:
     # Data subsampling along z
     z_stride: int = 1
     # Fraction of t samples per z-slice to draw each epoch (0< t_ratio <=1; 1 keeps all)
-    t_ratio: float = 0.1
+    t_ratio: float = 1
 
     pde_variant: PDEVariant = "ssfm"
 
