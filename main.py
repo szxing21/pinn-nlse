@@ -23,6 +23,8 @@ from train import train
 from visualize import generate_visualizations
 
 DEFAULT_FIG_DIR = "figures"
+# ds = PulseEvolutionDataset("data/pulse_evolution.mat", z_stride=5)
+# print(ds.z.shape[0])  # 应该从 11 变成 3
 
 
 def parse_hidden_layers(spec: str) -> Sequence[int]:
@@ -248,8 +250,14 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--z-stride",
         type=int,
-        default=1,
+        default=default_config.z_stride,
         help="Subsample factor along z for training data (>=1; 1 keeps all).",
+    )
+    parser.add_argument(
+        "--t-ratio",
+        type=float,
+        default=default_config.t_ratio,
+        help="Fraction of t-points per z-slice to sample each epoch (0-1].",
     )
     return parser
 
@@ -325,13 +333,22 @@ def main() -> None:
         beta2=args.beta2,
         beta3=args.beta3,
         gamma=args.gamma,
+        z_stride=max(1, args.z_stride),
+        t_ratio=args.t_ratio,
     )
+
+    sampler = None
+    if 0.0 < args.t_ratio < 1.0:
+        from pinn.dataset import TimeSliceSampler
+        sampler = TimeSliceSampler(dataset, args.t_ratio)
 
     dataloader = create_dataloader(
         dataset,
         batch_size=config.batch_size,
         num_workers=config.num_workers,
         pin_memory=config.pin_memory,
+        shuffle=True if sampler is None else False,
+        sampler=sampler,
     )
 
     model = SimplePINN(

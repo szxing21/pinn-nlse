@@ -56,9 +56,9 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", choices=["mlp", "pinn"], default="pinn", help="Training mode for trials.")
     parser.add_argument("--seed", type=int, default=0, help="Random seed for reproducibility.")
     parser.add_argument("--min-layers", type=int, default=2, help="Minimum hidden layers.")
-    parser.add_argument("--max-layers", type=int, default=4, help="Maximum hidden layers.")
-    parser.add_argument("--widths", default="64,128,256", help="Comma-separated choices for hidden widths.")
-    parser.add_argument("--fourier", default="0,16,32", help="Comma-separated choices for Fourier features.")
+    parser.add_argument("--max-layers", type=int, default=3, help="Maximum hidden layers.")
+    parser.add_argument("--widths", default="64,128", help="Comma-separated choices for hidden widths.")
+    parser.add_argument("--fourier", default="32", help="Comma-separated choices for Fourier features.")
     parser.add_argument("--external", default="0", help="Comma-separated choices for using external layers (broadcast). Default 0 disables external layers during tuning.")
     return parser
 
