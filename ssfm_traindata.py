@@ -15,6 +15,45 @@ matplotlib.use("Agg")  # headless backend; we save figures instead of showing
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy.io
+import numpy as np
+
+def compute_residuals(Tensor, Z, t_sec, beta2, beta3, gamma_SI):
+    """
+    Tensor: shape [nz, nt, 2], 0:real, 1:imag
+    Z: z 轴（米），t_sec: 时间轴（秒）
+    beta2/beta3: 与生成用的一致，单位 s^2/m, s^3/m
+    gamma_SI: 与生成用的一致，单位 1/(W·m)
+    """
+    A = Tensor[..., 0] + 1j * Tensor[..., 1]  # [nz, nt]
+    nz, nt = A.shape
+
+    dz = float(np.abs(Z[1] - Z[0])) if nz > 1 else 1.0
+    dt = float(np.abs(t_sec[1] - t_sec[0])) if nt > 1 else 1.0
+
+    A_r = A.real
+    A_i = A.imag
+
+    dA_r_dz = np.gradient(A_r, dz, axis=0, edge_order=2)
+    dA_i_dz = np.gradient(A_i, dz, axis=0, edge_order=2)
+
+    dA_r_dt = np.gradient(A_r, dt, axis=1, edge_order=2)
+    dA_i_dt = np.gradient(A_i, dt, axis=1, edge_order=2)
+
+    d2A_r_dt2 = np.gradient(dA_r_dt, dt, axis=1, edge_order=2)
+    d2A_i_dt2 = np.gradient(dA_i_dt, dt, axis=1, edge_order=2)
+
+    d3A_r_dt3 = np.gradient(d2A_r_dt2, dt, axis=1, edge_order=2) if beta3 != 0.0 else 0.0
+    d3A_i_dt3 = np.gradient(d2A_i_dt2, dt, axis=1, edge_order=2) if beta3 != 0.0 else 0.0
+
+    power = A_r**2 + A_i**2
+
+    # SSFM 版本对应的残差（alpha=0）
+    res_real = dA_r_dz + 0.5 * beta2 * d2A_i_dt2 - (beta3 / 6.0) * d3A_r_dt3 + gamma_SI * power * A_i
+    res_imag = dA_i_dz - 0.5 * beta2 * d2A_r_dt2 - (beta3 / 6.0) * d3A_i_dt3 - gamma_SI * power * A_r
+
+    res_sq = res_real**2 + res_imag**2
+    rms = float(np.sqrt(np.mean(res_sq)))
+    return res_real, res_imag, rms
 
 
 def run_ssfm() -> None:
@@ -27,7 +66,9 @@ def run_ssfm() -> None:
     Nz = int(round(L / dz))
 
     beta2 = -21.242e-27
+    # beta2 = 0
     beta3 = 16.6e-41
+    # beta3 = 0
     gamma = 1.3
     gamma_SI = gamma / 1e3  # (1/W/m)
 
@@ -39,7 +80,7 @@ def run_ssfm() -> None:
     P0 = 0.5
     FWHM = 100e-12
     sigma = FWHM / (2 * np.sqrt(2 * np.log(2)))
-    delays = np.array([-400, 0, 400], dtype=np.float64) * 1e-12
+    delays = np.array([-400,0,400], dtype=np.float64) * 1e-12
 
     A0 = np.zeros_like(t, dtype=np.complex128)
     for delay in delays:
@@ -111,11 +152,14 @@ def run_ssfm() -> None:
     fig2.savefig(data_dir / "pulse_initial_final.png", dpi=300, bbox_inches="tight")
 
     # Save outputs to .mat (path intentionally changed to data/pulse_evolution.mat).
-    T_ps_save = t  # seconds, consistent with the MATLAB export
+    Z_save = Z
+    T_ps_save = t * 1e12 # seconds, consistent with the MATLAB export
     output_path = data_dir / "pulse_evolution.mat"
-    scipy.io.savemat(output_path, {"Tensor": Tensor, "Z": Z, "T_ps": T_ps_save})
+    scipy.io.savemat(output_path, {"Tensor": Tensor, "Z": Z_save, "T_ps": T_ps_save})
     print(f"Saved tensor data to {output_path.resolve()}")
     plt.close("all")
+    res_r, res_i, res_rms = compute_residuals(Tensor, Z, T_ps_save, beta2, beta3, gamma_SI)
+    print(f"Residual RMS (SSFM grid): {res_rms:.3e}")
 
 
 if __name__ == "__main__":

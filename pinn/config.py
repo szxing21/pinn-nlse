@@ -28,7 +28,7 @@ class TrainingConfig:
     max_grad_norm: float = 1.0
     scheduler_patience: int = 15
     scheduler_factor: float = 0.5
-    mode: ModeChoice = "pinn"
+    mode: ModeChoice = "mlp"
 
     # Loss weights and sampling for PINN mode
     data_weight: float = 1.0
@@ -43,7 +43,7 @@ class TrainingConfig:
     gradient_noise_snr_db: float = 80.0
 
     # Fourier feature encoding
-    fourier_features: int = 4
+    fourier_features: int = 32
     fourier_scale: float = 8.0
 
     # Optional supervised pre-training before PINN fine-tuning
@@ -58,6 +58,8 @@ class TrainingConfig:
 
     # Data subsampling along z
     z_stride: int = 1
+    # Fraction of t samples per z-slice to draw each epoch (0< t_ratio <=1; 1 keeps all)
+    t_ratio: float = 0.1
 
     pde_variant: PDEVariant = "ssfm"
 

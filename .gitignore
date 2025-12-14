@@ -29,3 +29,5 @@ figures/
 # Misc
 *.log
 
+# Matlab
+4X4chipControl_training/

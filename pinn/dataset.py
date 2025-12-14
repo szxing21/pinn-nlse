@@ -7,7 +7,7 @@ from typing import Dict, Tuple
 import numpy as np
 import scipy.io
 import torch
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Sampler
 
 
 @dataclass(frozen=True)
@@ -44,6 +44,8 @@ class PulseEvolutionDataset(Dataset):
         self.z = payload["z"]
         self.t = payload["t"]
         self.stats = payload["stats"]
+        self.nz = int(self.z.shape[0])
+        self.nt = int(self.t.shape[0])
 
         self._initial_indices, self._boundary_indices, self._interior_indices = self._build_region_indices()
 
@@ -226,13 +228,48 @@ def create_dataloader(
     num_workers: int = 0,
     pin_memory: bool = False,
     shuffle: bool = True,
+    sampler: Sampler | None = None,
 ) -> DataLoader:
     """Helper for wrapping datasets with a standard DataLoader."""
 
     return DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=shuffle,
+        shuffle=shuffle if sampler is None else False,
+        sampler=sampler,
         num_workers=num_workers,
         pin_memory=pin_memory,
     )
+
+
+class TimeSliceSampler(Sampler[int]):
+    """
+    Randomly sample a fraction of t-points from each z-slice every epoch.
+
+    For a dataset flattened as (z, t) -> samples, we generate fresh indices per
+    iteration so that each z-slice contributes the same number of t points.
+    """
+
+    def __init__(self, dataset: "PulseEvolutionDataset", t_ratio: float) -> None:
+        if not (0.0 < t_ratio <= 1.0):
+            raise ValueError("t_ratio must be in (0, 1].")
+        self.dataset = dataset
+        self.t_ratio = float(t_ratio)
+
+    def __iter__(self):
+        nz = self.dataset.nz
+        nt = self.dataset.nt
+        t_per_slice = max(1, int(round(nt * self.t_ratio)))
+        indices: list[int] = []
+        for z_idx in range(nz):
+            base = z_idx * nt
+            perm = torch.randperm(nt)[:t_per_slice]
+            indices.extend((base + perm).tolist())
+        perm_all = torch.randperm(len(indices))
+        return iter([indices[i] for i in perm_all])
+
+    def __len__(self) -> int:
+        nz = self.dataset.nz
+        nt = self.dataset.nt
+        t_per_slice = max(1, int(round(nt * self.t_ratio)))
+        return nz * t_per_slice
