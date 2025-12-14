@@ -56,6 +56,60 @@ def compute_residuals(Tensor, Z, t_sec, beta2, beta3, gamma_SI):
     return res_real, res_imag, rms
 
 
+def compute_residuals_pskm(Tensor, Z_m, t_axis, beta2_si, beta3_si, gamma_SI):
+    """
+    Residuals using the same units/scale as PINN training (ps, km, ps^2/km, ps^3/km, (W km)^-1).
+
+    t_axis can be in seconds or picoseconds; we convert to ps only if values
+    are very small (<< 1 ps).
+    """
+    # Convert coefficients to ps/km units
+    beta2 = beta2_si * 1.0e27    # s^2/m -> ps^2/km
+    beta3 = beta3_si * 1.0e39    # s^3/m -> ps^3/km
+    gamma = gamma_SI * 1.0e3     # (W m)^-1 -> (W km)^-1
+
+    t_arr = np.asarray(t_axis, dtype=np.float64)
+    if np.max(np.abs(t_arr)) < 1e-6:
+        t_ps = t_arr * 1.0e12
+    else:
+        t_ps = t_arr
+    z = np.asarray(Z_m, dtype=np.float64)
+    A = Tensor[..., 0] + 1j * Tensor[..., 1]
+    nz, nt = A.shape
+
+    dz = float(np.abs(z[1] - z[0])) if nz > 1 else 1.0
+    dt = float(np.abs(t_ps[1] - t_ps[0])) if nt > 1 else 1.0
+
+    A_r = A.real
+    A_i = A.imag
+
+    # Derivatives: z is still in meters here, so convert d/dz to per km.
+    dA_r_dz = np.gradient(A_r, dz, axis=0, edge_order=2) * 1.0e3
+    dA_i_dz = np.gradient(A_i, dz, axis=0, edge_order=2) * 1.0e3
+
+    dA_r_dt = np.gradient(A_r, dt, axis=1, edge_order=2)
+    dA_i_dt = np.gradient(A_i, dt, axis=1, edge_order=2)
+
+    d2A_r_dt2 = np.gradient(dA_r_dt, dt, axis=1, edge_order=2)
+    d2A_i_dt2 = np.gradient(dA_i_dt, dt, axis=1, edge_order=2)
+
+    if beta3 != 0.0:
+        d3A_r_dt3 = np.gradient(d2A_r_dt2, dt, axis=1, edge_order=2)
+        d3A_i_dt3 = np.gradient(d2A_i_dt2, dt, axis=1, edge_order=2)
+    else:
+        d3A_r_dt3 = 0.0
+        d3A_i_dt3 = 0.0
+
+    power = A_r**2 + A_i**2
+
+    res_real = dA_r_dz + 0.5 * beta2 * d2A_i_dt2 - (beta3 / 6.0) * d3A_r_dt3 + gamma * power * A_i
+    res_imag = dA_i_dz - 0.5 * beta2 * d2A_r_dt2 - (beta3 / 6.0) * d3A_i_dt3 - gamma * power * A_r
+
+    res_sq = res_real**2 + res_imag**2
+    rms = float(np.sqrt(np.mean(res_sq)))
+    return res_real, res_imag, rms
+
+
 def run_ssfm() -> None:
     data_dir = Path("data")
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -153,13 +207,15 @@ def run_ssfm() -> None:
 
     # Save outputs to .mat (path intentionally changed to data/pulse_evolution.mat).
     Z_save = Z
-    T_ps_save = t * 1e12 # seconds, consistent with the MATLAB export
+    T_ps_save = t * 1e12  # seconds, consistent with the MATLAB export
     output_path = data_dir / "pulse_evolution.mat"
     scipy.io.savemat(output_path, {"Tensor": Tensor, "Z": Z_save, "T_ps": T_ps_save})
     print(f"Saved tensor data to {output_path.resolve()}")
     plt.close("all")
     res_r, res_i, res_rms = compute_residuals(Tensor, Z, T_ps_save, beta2, beta3, gamma_SI)
-    print(f"Residual RMS (SSFM grid): {res_rms:.3e}")
+    print(f"Residual RMS (SSFM grid, SI units): {res_rms:.3e}")
+    res_r_ps, res_i_ps, res_rms_ps = compute_residuals_pskm(Tensor, Z, T_ps_save, beta2, beta3, gamma_SI)
+    print(f"Residual RMS (ps/km units, matches PINN): {res_rms_ps:.3e}")
 
 
 if __name__ == "__main__":
