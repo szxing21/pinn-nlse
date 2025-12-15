@@ -1,10 +1,51 @@
 from __future__ import annotations
 
 from typing import Mapping, Sequence
+from pathlib import Path
+
+import numpy as np
 
 import torch
 from torch import nn
 import torch.nn.functional as F
+
+# Optional: MATLAB real_mul_shift via MATLAB Engine (non-autograd path)
+_MATLAB_ENG = None
+
+
+def _call_matlab_real_mul_shift(W_tile: torch.Tensor, X_tile: torch.Tensor) -> torch.Tensor | None:
+    """
+    Call MATLAB real_mul_shift(A,B) using MATLAB Engine, if available.
+
+    Expects W_tile shape [4,4], X_tile shape [4,B]; returns torch.Tensor [4,B].
+    Falls back to None if MATLAB Engine is unavailable or errors.
+    """
+    global _MATLAB_ENG
+    try:
+        import matlab.engine  # type: ignore
+    except Exception:
+        return None
+
+    if _MATLAB_ENG is None:
+        try:
+            _MATLAB_ENG = matlab.engine.start_matlab()
+            hw_dir = Path(__file__).resolve().parent / "4X4chipControl_training"
+            _MATLAB_ENG.addpath(str(hw_dir), nargout=0)
+            _MATLAB_ENG.cd(str(hw_dir), nargout=0)
+        except Exception:
+            _MATLAB_ENG = None
+            return None
+
+    W_np = W_tile.detach().cpu().numpy()
+    X_np = X_tile.detach().cpu().numpy()
+    try:
+        W_mat = matlab.double(W_np.tolist())
+        X_mat = matlab.double(X_np.tolist())
+        Y_mat = _MATLAB_ENG.real_mul_shift(W_mat, X_mat)
+        Y_np = np.array(Y_mat, dtype=W_np.dtype)
+        return torch.as_tensor(Y_np, device=W_tile.device, dtype=W_tile.dtype)
+    except Exception:
+        return None
 
 
 def _hardware_linear(
@@ -43,7 +84,11 @@ def _hardware_linear(
             X_tile = x_pad[:, i:i + block].T                  # [4,B]
             # TODO: replace this matmul with your hardware call:
             # Y_tile = run_hw_mvm(X_tile, W_tile, zeros(4,1))  # [4,B]
-            Y_tile = W_tile @ X_tile                          # software simulation
+            Y_matlab = _call_matlab_real_mul_shift(W_tile, X_tile)
+            if Y_matlab is not None:
+                Y_tile = Y_matlab
+            else:
+                Y_tile = W_tile @ X_tile                      # software simulation
             acc = acc + Y_tile.T                              # [B,4]
         y_hw[:, o:o + block] = acc
 

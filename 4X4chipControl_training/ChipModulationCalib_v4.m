@@ -20,7 +20,14 @@ else
     pd2 = pd2(1);
 end
 fopen(pd2);
-
+laser = instrfind('Type', 'gpib', 'BoardIndex', 0, 'PrimaryAddress', 3, 'Tag', '');
+if isempty(laser)
+    laser = gpib('NI',0, 3);
+else
+    fclose(laser);
+    laser = laser(1);
+end
+fopen(laser);
 [a,dac]=InitArduino(1000000); % Arduino board 
 ResetDac(a); % Reset DAC board
 pause_write = 0.2;
@@ -64,8 +71,10 @@ pause_write = 0.1;
 dcCol = [];
 dc2Col = [];
 
-for i = in_start:1:in_end;
-    for j = out_start:1:out_end;
+for i = in_start:1:in_end
+    fprintf(laser, 'CHAN %d; OUT 1', i);
+    fprintf(laser, 'CHAN %d; SHUTTER 1', i);
+    for j = out_start:1:out_end
         OutPowerVal = [];
         OutPowerRef = [];
         if j == 1
@@ -123,52 +132,54 @@ for i = in_start:1:in_end;
         plot(V_range(2:end), OutPowerVal(2:end))
         hold on
     end
+    fprintf(laser, 'CHAN %d; OUT 0', i);
+    fprintf(laser, 'CHAN %d; SHUTTER 0', i);
 end
 
 %%
 
-plot( OutPowerVal(2:end))
-
-%%
-PMax11 = [];
-load("data/mat_ele_11_Pmax.mat");
-load("data/mat_ele_11_Pref.mat");
-disp(1)
-
-V_range = 21900:100:55300;
-%plot(V_range, OutPowerRef)
-
-Rev_change = [];
-size2 = size(OutPowerRef);
-for i = 1:1:(size2(2));
-    Rev_change(end+1) = OutPowerRef(i) - OutPowerRef(1);
-end
-
-OutPowerCal = OutPowerVal - Rev_change;
-figure(1);
-plot(V_range, OutPowerVal)
-figure(2);
-plot(V_range, OutPowerCal)
-
-
-%%
-port_number = 24;
-pause_write = 0.1;
-Dac_data = 22000:100:60000;
-
-
-P_sweep_ch24_1 = [];
-Vheater_tune_ch24_1 = [];
-Iheater_tune_ch24_1 = [];
-
-
-for i=1:1:length(Dac_data)
-    Write2dac(dac,port_number,Dac_data(i),pause_write);  % write a voltage to dac
-    Vheater_tune_ch24_1 = [Vheater_tune_ch24_1; str2num(query(MMV, ':MEAS:VOLT:DC?'))];
-    Iheater_tune_ch24_1 = [Iheater_tune_ch24_1; str2num(query(MMC, ':MEAS:CURR:DC?'))];
-    P_sweep_ch24_1 = [P_sweep_ch24_1 str2num(query(PD, 'READ2:POW?'))]; %READ1:chA; READ2:chB
-end
-
-figure;plot(Vheater_tune_ch24_1,P_sweep_ch24_1);
-%%
-plot(V_range, dc2Col)
+% plot( OutPowerVal(2:end))
+% 
+% %%
+% PMax11 = [];
+% load("data/mat_ele_11_Pmax.mat");
+% load("data/mat_ele_11_Pref.mat");
+% disp(1)
+% 
+% V_range = 21900:100:55300;
+% %plot(V_range, OutPowerRef)
+% 
+% Rev_change = [];
+% size2 = size(OutPowerRef);
+% for i = 1:1:(size2(2));
+%     Rev_change(end+1) = OutPowerRef(i) - OutPowerRef(1);
+% end
+% 
+% OutPowerCal = OutPowerVal - Rev_change;
+% figure(1);
+% plot(V_range, OutPowerVal)
+% figure(2);
+% plot(V_range, OutPowerCal)
+% 
+% 
+% %%
+% port_number = 24;
+% pause_write = 0.1;
+% Dac_data = 22000:100:60000;
+% 
+% 
+% P_sweep_ch24_1 = [];
+% Vheater_tune_ch24_1 = [];
+% Iheater_tune_ch24_1 = [];
+% 
+% 
+% for i=1:1:length(Dac_data)
+%     Write2dac(dac,port_number,Dac_data(i),pause_write);  % write a voltage to dac
+%     Vheater_tune_ch24_1 = [Vheater_tune_ch24_1; str2num(query(MMV, ':MEAS:VOLT:DC?'))];
+%     Iheater_tune_ch24_1 = [Iheater_tune_ch24_1; str2num(query(MMC, ':MEAS:CURR:DC?'))];
+%     P_sweep_ch24_1 = [P_sweep_ch24_1 str2num(query(PD, 'READ2:POW?'))]; %READ1:chA; READ2:chB
+% end
+% 
+% figure;plot(Vheater_tune_ch24_1,P_sweep_ch24_1);
+% %%
+% plot(V_range, dc2Col)
