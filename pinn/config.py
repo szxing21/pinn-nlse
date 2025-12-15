@@ -13,37 +13,38 @@ class TrainingConfig:
     """Hyperparameters controlling optimisation."""
 
     # Network architecture
-    hidden_layers: tuple[int, ...] = (256, 256, 128)
+    hidden_layers: tuple[int, ...] = (128, 256, 128)
     external_layers: tuple[bool, ...] = (0,0,0,0)  # broadcast or per-linear-layer flags (hidden + output)
     external_snr_db: float = 30.0
 
-    batch_size: int = 64
-    learning_rate: float = 1e-3
-    num_epochs: int = 100
+    batch_size: int = 256
+    learning_rate: float = 10e-3
+    num_epochs: int = 300
     device: DeviceChoice = "auto"
     print_every: int = 10
+    seed: int | None = 1234
     save_path: str = "checkpoints/pinn_mlp.pt"
     num_workers: int = 0
     pin_memory: bool = False
     max_grad_norm: float = 1.0
-    scheduler_patience: int = 15
-    scheduler_factor: float = 0.5
+    scheduler_patience: int = 10
+    scheduler_factor: float = 0.8
     mode: ModeChoice = "pinn"
 
     # Loss weights and sampling for PINN mode
-    data_weight: float = 1
+    data_weight: float = 1.0
     initial_weight: float = 1.0
     boundary_weight: float = 0.0
-    residual_weight: float = 11
-    residual_warmup_epochs: int = 50
-    residual_scale: float = 0.0  # <=0 enables automatic scaling from teacher residual
+    residual_weight: float = 0.2
+    residual_warmup_epochs: int = 0
+    residual_scale: float = 200  # <=0 enables automatic scaling from teacher residual
     ic_samples: int = 256
     bc_samples: int = 256
     residual_samples: int = 2048
     gradient_noise_snr_db: float = 80.0
 
     # Fourier feature encoding
-    fourier_features: int = 4
+    fourier_features: int = 32
     fourier_scale: float = 8.0
 
     # Optional supervised pre-training before PINN fine-tuning
@@ -57,9 +58,9 @@ class TrainingConfig:
     adaptive_balance_max: float = 10.0
 
     # Data subsampling along z
-    z_stride: int = 1
+    z_stride: int = 2
     # Fraction of t samples per z-slice to draw each epoch (0< t_ratio <=1; 1 keeps all)
-    t_ratio: float = 1
+    t_ratio: float = 0.2
 
     pde_variant: PDEVariant = "ssfm"
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import replace
-from typing import List, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import optuna
 
@@ -17,11 +17,11 @@ from train import train
 def split_dataset(
     dataset: PulseEvolutionDataset,
     val_fraction: float,
-    seed: int,
+    seed: int | None,
 ) -> tuple[Subset, Subset]:
     """Randomly split dataset into train/val subsets."""
 
-    generator = torch.Generator().manual_seed(seed)
+    generator = torch.Generator().manual_seed(seed) if seed is not None else None
     indices = torch.randperm(len(dataset), generator=generator)
     val_size = max(1, int(len(indices) * val_fraction))
     val_idx = indices[:val_size]
@@ -47,25 +47,30 @@ def evaluate_mse(model: torch.nn.Module, dataloader: DataLoader, device: torch.d
 
 
 def build_argparser() -> argparse.ArgumentParser:
+    default_cfg = TrainingConfig()
     parser = argparse.ArgumentParser(description="Lightweight hyperparameter search over network depth/width.")
     parser.add_argument("--data-path", default="data/pulse_evolution.mat", help="Path to the MATLAB tensor.")
     parser.add_argument("--trials", type=int, default=10, help="Number of Optuna trials.")
-    parser.add_argument("--epochs", type=int, default=30, help="Epochs per trial (keep small for quick sweeps / pruning).")
+    parser.add_argument("--epochs", type=int, default=20, help="Epochs per trial (keep small for quick sweeps / pruning).")
     parser.add_argument("--val-fraction", type=float, default=0.1, help="Validation split fraction.")
     parser.add_argument("--device", choices=["cpu", "cuda", "auto"], default="auto", help="Computation device.")
     parser.add_argument("--mode", choices=["mlp", "pinn"], default="pinn", help="Training mode for trials.")
-    parser.add_argument("--seed", type=int, default=0, help="Random seed for reproducibility.")
-    parser.add_argument("--min-layers", type=int, default=2, help="Minimum hidden layers.")
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=default_cfg.seed,
+        help="Optional random seed for reproducibility (leave unset for randomised runs).",
+    )
+    parser.add_argument("--min-layers", type=int, default=3, help="Minimum hidden layers.")
     parser.add_argument("--max-layers", type=int, default=3, help="Maximum hidden layers.")
     parser.add_argument("--widths", default="256", help="Comma-separated choices for hidden widths.")
     parser.add_argument("--fourier", default="32", help="Comma-separated choices for Fourier features.")
     parser.add_argument("--external", default="0", help="Comma-separated choices for using external layers (broadcast). Default 0 disables external layers during tuning.")
-    parser.add_argument("--lr-min", type=float, default=1e-4, help="Min learning rate for search (log-scale).")
+    parser.add_argument("--lr-min", type=float, default=9e-4, help="Min learning rate for search (log-scale).")
     parser.add_argument("--lr-max", type=float, default=5e-3, help="Max learning rate for search (log-scale).")
-    parser.add_argument("--res-min", type=float, default=5, help="Min residual_weight for search (log-scale).")
-    parser.add_argument("--res-max", type=float, default=20.0, help="Max residual_weight for search (log-scale).")
-    parser.add_argument("--batches", default="64,128", help="Comma-separated candidate batch sizes for search.")
-    parser.add_argument("--t-ratio", type=float, default=1.0, help="Fraction of t-points per z-slice to sample each epoch (0-1].")
+    parser.add_argument("--res-min", type=float, default=0.1, help="Min residual_weight for search (log-scale).")
+    parser.add_argument("--res-max", type=float, default=1.0, help="Max residual_weight for search (log-scale).")
+    parser.add_argument("--batches", default="256", help="Comma-separated candidate batch sizes for search.")
     return parser
 
 
@@ -102,17 +107,18 @@ def build_time_sampler(dataset, t_ratio: float) -> Sampler | None:
     if isinstance(dataset, Subset) and hasattr(dataset.dataset, "nt"):
         base = dataset.dataset
         nt = int(base.nt)
-        z_to_indices = {}
-        for idx in dataset.indices:
-            z_idx = idx // nt
-            z_to_indices.setdefault(z_idx, []).append(int(idx))
+        # Group subset positions (0..len(subset)-1) by their z-slice.
+        z_to_subset_pos: dict[int, list[int]] = {}
+        for subset_pos, orig_idx in enumerate(dataset.indices):
+            z_idx = int(orig_idx) // nt
+            z_to_subset_pos.setdefault(z_idx, []).append(subset_pos)
 
         class _SubsetTimeSampler(Sampler[int]):
             def __iter__(self):
                 import torch
 
                 chosen: list[int] = []
-                for idxs in z_to_indices.values():
+                for idxs in z_to_subset_pos.values():
                     t_count = len(idxs)
                     t_keep = max(1, int(round(t_count * t_ratio)))
                     perm = torch.randperm(t_count)[:t_keep]
@@ -121,7 +127,7 @@ def build_time_sampler(dataset, t_ratio: float) -> Sampler | None:
                 return iter([chosen[i] for i in perm_all])
 
             def __len__(self) -> int:
-                return sum(max(1, int(round(len(v) * t_ratio))) for v in z_to_indices.values())
+                return sum(max(1, int(round(len(v) * t_ratio))) for v in z_to_subset_pos.values())
 
         return _SubsetTimeSampler()
 
@@ -131,7 +137,8 @@ def build_time_sampler(dataset, t_ratio: float) -> Sampler | None:
 def main() -> None:
     args = build_argparser().parse_args()
 
-    dataset = PulseEvolutionDataset(args.data_path, z_stride=TrainingConfig().z_stride)
+    default_cfg = TrainingConfig()
+    dataset = PulseEvolutionDataset(args.data_path, z_stride=default_cfg.z_stride)
     train_ds, val_ds = split_dataset(dataset, val_fraction=args.val_fraction, seed=args.seed)
 
     width_choices = parse_int_list(args.widths)
@@ -139,7 +146,6 @@ def main() -> None:
     external_choices = parse_bool_list(args.external)
     batch_choices = parse_int_list(args.batches)
 
-    default_cfg = TrainingConfig()
     device_choice = args.device
 
     def objective(trial: optuna.Trial) -> float:
@@ -158,6 +164,7 @@ def main() -> None:
             print_every=max(1, args.epochs // 5),
             device=device_choice,
             mode=args.mode,
+            seed=args.seed,
             hidden_layers=hidden,
             fourier_features=ff,
             external_layers=ext,
@@ -165,6 +172,12 @@ def main() -> None:
             residual_weight=res_w,
             batch_size=bs,
         )
+
+        if cfg.seed is not None:
+            trial_seed = cfg.seed
+            torch.manual_seed(trial_seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(trial_seed)
 
         model = SimplePINN(
             input_dim=2,
@@ -177,7 +190,7 @@ def main() -> None:
             external_snr_db=cfg.external_snr_db,
         )
 
-        train_sampler = build_time_sampler(train_ds, args.t_ratio)
+        train_sampler = build_time_sampler(train_ds, default_cfg.t_ratio)
         val_sampler = None  # keep full validation
 
         train_loader = create_dataloader(

@@ -115,8 +115,8 @@ def run_ssfm() -> None:
     data_dir.mkdir(parents=True, exist_ok=True)
 
     # Parameter setup (units mirror the MATLAB script).
-    L = 100 * 1e3  # total length (m)
-    dz = 100.0  # SSFM step (m)
+    L = 50 * 1e3  # total length (m)
+    dz = 10.0  # SSFM step (m)
     Nz = int(round(L / dz))
 
     beta2 = -21.242e-27
@@ -126,15 +126,15 @@ def run_ssfm() -> None:
     gamma = 1.3
     gamma_SI = gamma / 1e3  # (1/W/m)
 
-    T = 3000e-12
-    N = 2**10
+    T = 1500e-12
+    N = 2**8
     dt = T / N
     t = np.arange(-N // 2, N // 2, dtype=np.float64) * dt
 
     P0 = 0.5
     FWHM = 100e-12
     sigma = FWHM / (2 * np.sqrt(2 * np.log(2)))
-    delays = np.array([-400,0,400], dtype=np.float64) * 1e-12
+    delays = np.array([-200,200], dtype=np.float64) * 1e-12
 
     A0 = np.zeros_like(t, dtype=np.complex128)
     for delay in delays:
@@ -145,7 +145,7 @@ def run_ssfm() -> None:
     omega = 2 * np.pi * f
 
     # Save tensor initialisation.
-    save_interval = 10e3  # save every 10 km (value kept identical to MATLAB)
+    save_interval = 0.5e3  # save every 10 km (value kept identical to MATLAB)
     num_save = int(round(L / save_interval))
     Tensor = np.zeros((num_save + 1, N, 2), dtype=np.float64)
     Tensor[0, :, 0] = A0.real
