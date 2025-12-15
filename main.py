@@ -259,6 +259,12 @@ def build_argument_parser() -> argparse.ArgumentParser:
         default=default_config.t_ratio,
         help="Fraction of t-points per z-slice to sample each epoch (0-1].",
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=default_config.seed,
+        help="Optional random seed used for data sampling / initialisation.",
+    )
     return parser
 
 
@@ -301,6 +307,7 @@ def main() -> None:
         num_epochs=args.epochs,
         device=args.device,
         print_every=args.print_every,
+        seed=args.seed,
         save_path=save_path,
         num_workers=args.num_workers,
         pin_memory=args.pin_memory,
@@ -338,6 +345,10 @@ def main() -> None:
     )
 
     sampler = None
+    if config.seed is not None:
+        torch.manual_seed(config.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(config.seed)
     if 0.0 < args.t_ratio < 1.0:
         from pinn.dataset import TimeSliceSampler
         sampler = TimeSliceSampler(dataset, args.t_ratio)
