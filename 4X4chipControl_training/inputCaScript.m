@@ -10,14 +10,9 @@ else
 end
 fopen(tekAWG);
 
-pd1 = instrfind('Type', 'gpib', 'BoardIndex', 0, 'PrimaryAddress', 23, 'Tag', '');
-if isempty(pd1)
-    pd1 = gpib('NI',0, 23);
-else
-    fclose(pd1);
-    pd1 = pd1(1);
-end
-fopen(pd1);
+pd1 = visadev("GPIB0::23::INSTR");
+pd1.Timeout = 5;
+pd1.Terminator = "LF";
 
 laser = instrfind('Type', 'gpib', 'BoardIndex', 0, 'PrimaryAddress', 3, 'Tag', '');
 if isempty(laser)
@@ -45,7 +40,8 @@ out_power = [];
 for i = 0:0.005:4.9
     fprintf(tekAWG, sprintf('SOUR1:VOLT:LEV:IMM:OFFS %fV', i/2));
     pause(0.1)
-    out_power(end+1) = str2double(query(pd1, 'READ1:POW?'));
+    writeline(pd1, 'READ1:POW?');
+    out_power(end+1) = str2double(readline(pd1));
 end
 fprintf(laser, 'CHAN 1; OUT 0');
 fprintf(laser, "CHAN 1; SHUTTER 0");
@@ -65,7 +61,8 @@ out_power = [];
 for i = 0:0.005:4.9
     fprintf(tekAWG, sprintf('SOUR2:VOLT:LEV:IMM:OFFS %fV', i/2));
     pause(0.1)
-    out_power(end+1) = str2double(query(pd1, 'READ1:POW?'));
+    writeline(pd1, 'READ1:POW?');
+    out_power(end+1) = str2double(readline(pd1));
 end
 fprintf(tekAWG, ':OUTP2 OFF');
 
@@ -101,7 +98,8 @@ out_power = [];
 for i = 0:0.005:4.9
     fprintf(agAWG, sprintf('SOUR1:VOLT:LEV:IMM:OFFS %fV', i/2));
     pause(0.1)
-    out_power(end+1) = str2double(query(pd1, 'READ1:POW?'));
+    writeline(pd1, 'READ1:POW?');
+    out_power(end+1) = str2double(readline(pd1));
 end
 fprintf(agAWG, ':OUTP1 OFF');
 fprintf(laser, 'CHAN 3; OUT 0');
@@ -122,7 +120,8 @@ out_power = [];
 for i = 0:0.005:4.9
     fprintf(agAWG, sprintf('SOUR2:VOLT:LEV:IMM:OFFS %fV', i/2));
     pause(0.1)
-    out_power(end+1) = str2double(query(pd1, 'READ1:POW?'));
+    writeline(pd1, 'READ1:POW?');
+    out_power(end+1) = str2double(readline(pd1));
 end
 fprintf(laser, 'CHAN 4; OUT 0');
 fprintf(laser, "CHAN 4; SHUTTER 0");

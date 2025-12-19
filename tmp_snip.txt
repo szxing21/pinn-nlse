@@ -1,0 +1,70 @@
+0061: 
+0062:     try:
+0063:         grid = targets.view(z_array.size, t_array.size, -1).cpu().numpy()
+0064:     except Exception:
+0065:         return None
+0066: 
+0067:     amplitudes = stats.denormalise_targets(grid)
+0068:     if amplitudes.shape[-1] < 2:
+0069:         return None
+0070: 
+0071:     amplitudes_complex = amplitudes[..., 0] + 1j * amplitudes[..., 1]
+0072:     _, _, mse = residual_statistics(z_array, t_array, amplitudes_complex, config)
+0073:     return mse
+0074: 
+0075: 
+0076: def train(
+0077:     model: nn.Module,
+0078:     dataloader: DataLoader,
+0079:     config: TrainingConfig,
+0080:     dataset=None,
+0081: ) -> Dict[str, List[float]]:
+0082:     """Run a training loop supporting both supervised and PINN modes."""
+0083: 
+0084:     device = _resolve_device(config.device)
+0085:     print(f"Using device: {device}")
+0086:     model = model.to(device)
+0087: 
+0088:     start_time = time.time()
+0089: 
+0090:     criterion = nn.MSELoss()
+0091:     optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
+0092:     scheduler = _configure_scheduler(optimizer, config)
+0093: 
+0094:     history: Dict[str, List[float]] = {"loss": []}
+0095:     teacher_residual_rms: Optional[float] = None
+0096:     if config.mode == "pinn":
+0097:         if dataset is None:
+0098:             raise ValueError("PINN mode requires access to the full dataset for condition sampling.")
+0099: 
+0100:         teacher_residual_mse = _estimate_teacher_residual_mse(dataset, config)
+0101:         if teacher_residual_mse is not None and teacher_residual_mse > 0.0:
+0102:             teacher_residual_rms = float(teacher_residual_mse ** 0.5)
+0103:             if config.residual_scale <= 0.0:
+0104:                 config.residual_scale = float(1.0 / teacher_residual_mse)
+0105:                 print(
+0106:                     f"Auto-tuned residual_scale to {config.residual_scale:.3e} "
+0107:                     f"(teacher residual RMS ~ {teacher_residual_rms:.3e})"
+0108:                 )
+0109:             else:
+0110:                 baseline = config.residual_weight * config.residual_scale * teacher_residual_mse
+0111:                 print(
+0112:                     f"Teacher residual RMS ~ {teacher_residual_rms:.3e}; "
+0113:                     f"baseline weighted physics term ~ {baseline:.3e}"
+0114:                 )
+0115:         elif config.residual_scale <= 0.0:
+0116:             config.residual_scale = 1.0
+0117:             print("Falling back to residual_scale=1.0 (auto calibration unavailable).")
+0118: 
+0119:         loss_fn = (
+0120:             compute_pinn_loss_components_ssfm
+0121:             if config.pde_variant == "ssfm"
+0122:             else compute_pinn_loss_components
+0123:         )
+0124: 
+0125:         history.update(
+0126:             {
+0127:                 "data_loss": [],
+0128:                 "initial_loss": [],
+0129:                 "boundary_loss": [],
+0130:                 "residual_loss": [],

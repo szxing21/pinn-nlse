@@ -3,23 +3,10 @@ instrreset;
 
 %%
 
-pd1 = instrfind('Type', 'gpib', 'BoardIndex', 0, 'PrimaryAddress', 23, 'Tag', '');
-if isempty(pd1)
-    pd1 = gpib('NI',0, 23);
-else
-    fclose(pd1);
-    pd1 = pd1(1);
-end
-fopen(pd1);
-
-pd2 = instrfind('Type', 'gpib', 'BoardIndex', 0, 'PrimaryAddress', 22, 'Tag', '');
-if isempty(pd2)
-    pd2 = gpib('NI',0, 22);
-else
-    fclose(pd2);
-    pd2 = pd2(1);
-end
-fopen(pd2);
+pd1 = visadev("GPIB0::23::INSTR");
+pd2 = visadev("GPIB0::22::INSTR");
+% pd1.Timeout = 5; pd2.Timeout = 5;
+% pd1.Terminator = "LF"; pd2.Terminator = "LF";
 laser = instrfind('Type', 'gpib', 'BoardIndex', 0, 'PrimaryAddress', 3, 'Tag', '');
 if isempty(laser)
     laser = gpib('NI',0, 3);
@@ -37,22 +24,20 @@ disp(1)
 
 %%
 
-idn2_pd1 = query(pd1, '*IDN?');
-idn3_pd2 = query(pd2, '*IDN?');
+writeline(pd1, '*IDN?'); idn2_pd1 = readline(pd1);
+writeline(pd2, '*IDN?'); idn3_pd2 = readline(pd2);
 disp(idn2_pd1)
 disp(idn3_pd2)
 
 %%
 
-fprintf(pd1, 'SENS1:POW:ATIME 50MS');
-fprintf(pd1, 'SENS2:POW:ATIME 50MS');
-%%
-fprintf(pd2, 'SENS1:POW:ATIME 50MS');
-fprintf(pd2, 'SENS2:POW:ATIME 50MS');
-%%
-fprintf(pd2, 'SENS2:POW:RANG -20DBM');
-fprintf(pd1, 'SENS1:POW:RANG -20DBM');
-fprintf(pd1, 'SENS2:POW:RANG -20DBM');
+writeline(pd1, 'SENS1:POW:ATIME 50MS');
+writeline(pd1, 'SENS2:POW:ATIME 50MS');
+writeline(pd2, 'SENS1:POW:ATIME 50MS');
+writeline(pd2, 'SENS2:POW:ATIME 50MS');
+writeline(pd2, 'SENS2:POW:RANG -20DBM');
+writeline(pd1, 'SENS1:POW:RANG -20DBM');
+writeline(pd1, 'SENS2:POW:RANG -20DBM');
 
 
 %%
@@ -62,9 +47,9 @@ mat_chan_list = [5, 4, 7, 12; 3, 6, 11, 16; 25, 30, 33, 38; 27, 26, 31, 34];
 pd_items = {pd1, pd2};
 
 in_start = 1;
-in_end = 1;
-out_start = 2;
-out_end = 2;
+in_end = 4;
+out_start = 1;
+out_end = 4;
 V_range = 22000:100:58000;
 pause_write = 0.1;
 
@@ -83,8 +68,10 @@ for i = in_start:1:in_end
             for k = 22000:100:58000
                 Write2dac_test(dac, mat_chan_list(j,i), k, pause_write);
                 pause(0.2)
-                pdOutSingle = str2double(query(pd1, pdChanSelRead));
-                pdOutRefSin = str2double(query(pd1, pdChanSelRefe));
+                writeline(pd1, pdChanSelRead);
+                pdOutSingle = str2double(readline(pd1));
+                writeline(pd1, pdChanSelRefe);
+                pdOutRefSin = str2double(readline(pd1));
                 OutPowerVal(end+1) = pdOutSingle;
                 OutPowerRef(end+1) = pdOutRefSin;
             end
@@ -94,8 +81,10 @@ for i = in_start:1:in_end
             for k = 22000:100:58000
                 Write2dac_test(dac, mat_chan_list(j,i), k, pause_write);
                 pause(0.2)
-                pdOutSingle = str2double(query(pd1, pdChanSelRead));
-                pdOutRefSin = str2double(query(pd1, pdChanSelRefe));
+                writeline(pd1, pdChanSelRead);
+                pdOutSingle = str2double(readline(pd1));
+                writeline(pd1, pdChanSelRefe);
+                pdOutRefSin = str2double(readline(pd1));
                 OutPowerVal(end+1) = pdOutSingle;
                 OutPowerRef(end+1) = pdOutRefSin;
             end
@@ -105,8 +94,10 @@ for i = in_start:1:in_end
             for k = 22000:100:58000
                 Write2dac_test(dac, mat_chan_list(j,i), k, pause_write);
                 pause(0.2)
-                pdOutSingle = str2double(query(pd2, pdChanSelRead));
-                pdOutRefSin = str2double(query(pd2, pdChanSelRefe));
+                writeline(pd2, pdChanSelRead);
+                pdOutSingle = str2double(readline(pd2));
+                writeline(pd2, pdChanSelRefe);
+                pdOutRefSin = str2double(readline(pd2));
                 OutPowerVal(end+1) = pdOutSingle;
                 OutPowerRef(end+1) = pdOutRefSin;
             end
@@ -116,8 +107,10 @@ for i = in_start:1:in_end
             for k = 22000:100:58000
                 Write2dac_test(dac, mat_chan_list(j,i), k, pause_write);
                 pause(0.2)
-                pdOutSingle = str2double(query(pd2, pdChanSelRead));
-                pdOutRefSin = str2double(query(pd2, pdChanSelRefe));
+                writeline(pd2, pdChanSelRead);
+                pdOutSingle = str2double(readline(pd2));
+                writeline(pd2, pdChanSelRefe);
+                pdOutRefSin = str2double(readline(pd2));
                 OutPowerVal(end+1) = pdOutSingle;
                 OutPowerRef(end+1) = pdOutRefSin;
             end

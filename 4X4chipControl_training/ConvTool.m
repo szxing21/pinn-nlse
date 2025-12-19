@@ -48,10 +48,14 @@ classdef ConvTool < handle
 
         function PowOut = readPowOut(pdit1, pdit2)
             PowOut = [];
-            PowOut(1,1) = str2double(query(pdit1, 'READ1:POW?')); %Output channel 1
-            PowOut(2,1) = str2double(query(pdit1, 'READ2:POW?')); %Output channel 2
-            PowOut(3,1) = str2double(query(pdit2, 'READ1:POW?')); %Output channel 3
-            PowOut(4,1) = str2double(query(pdit2, 'READ2:POW?')); %Output channel 4
+            writeline(pdit1, 'READ1:POW?');
+            PowOut(1,1) = str2double(readline(pdit1)); %Output channel 1
+            writeline(pdit1, 'READ2:POW?');
+            PowOut(2,1) = str2double(readline(pdit1)); %Output channel 2
+            writeline(pdit2, 'READ1:POW?');
+            PowOut(3,1) = str2double(readline(pdit2)); %Output channel 3
+            writeline(pdit2, 'READ2:POW?');
+            PowOut(4,1) = str2double(readline(pdit2)); %Output channel 4
         end
 
         function TtoHexVCol = load_VtoTransCali(i_ran, j_ran) % Function for loading the references of the on chip MZIs
@@ -217,10 +221,11 @@ classdef ConvTool < handle
             end
             %outPowCol = {};
             outValCol = {};
-            noOfSampforRef = 50;
+            noOfSampforRef = SampSize2; %50
             All1sMat = ones([4, 4]);
             All1sVec = ones([4, 1]);
             InCalRef = obj.load_InVcal2();
+            % length(X)
             valVInc = obj.valInAWG2(X, InCalRef);
             valVInc1s = obj.valInAWG(All1sVec, InCalRef);
             obj.openLaser(laser)
@@ -236,6 +241,8 @@ classdef ConvTool < handle
                     obj.write2InAWG_single(awg1, awg2, valVInc, j, i)
                     pause(0.2);
                     temp1(:,1) = obj.readPowOut(pd1, pd2);
+                    if any(isnan(temp1)), temp1(:,1) = obj.readPowOut(pd1, pd2);end
+                    % if any(isnan(temp1)), save('NaN_dump0.mat'); error('NaN detected in outValTemp, workspace saved'); end
                     outPowTemp(:,i) = temp1(1:MatSize1,1);
                     if floor(i/noOfSampforRef) == i/noOfSampforRef
                         obj.write2DACmatColumn(dac, All1sMat, j)
@@ -253,6 +260,8 @@ classdef ConvTool < handle
                         outValTemp(:,(k-1)*noOfSampforRef+l) = db2pow(outPowTemp(:,(k-1)*noOfSampforRef+l)-outPowRef(:,k)) ;
                     end
                 end
+                if any(isnan(outValTemp)), save('NaN_dump1.mat'); error('NaN detected in outValTemp, workspace saved'); end
+                
                 %disp(size(outValTemp))
                 outValCol{j} = outValTemp;
                 laserCmd2 = sprintf("CHAN %d; SHUTTER 0",j);

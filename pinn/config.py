@@ -13,13 +13,13 @@ class TrainingConfig:
     """Hyperparameters controlling optimisation."""
 
     # Network architecture
-    hidden_layers: tuple[int, ...] = (128, 256, 128)
-    external_layers: tuple[bool, ...] = (0,0,0,1)  # broadcast or per-linear-layer flags (hidden + output)
-    external_snr_db: float = 30.0
+    hidden_layers: tuple[int, ...] = (256, 256, 256)
+    external_layers: tuple[bool, ...] = (1,1,1,1)  # broadcast or per-linear-layer flags (hidden + output)
+    external_snr_db: float = 40.0
 
-    batch_size: int = 256
-    learning_rate: float = 10e-3
-    num_epochs: int = 300
+    batch_size: int = 64#256
+    learning_rate: float = 1e-3#10e-3
+    num_epochs: int = 100
     device: DeviceChoice = "auto"
     print_every: int = 10
     seed: int | None = 1234
@@ -35,13 +35,13 @@ class TrainingConfig:
     data_weight: float = 1.0
     initial_weight: float = 1.0
     boundary_weight: float = 0.0
-    residual_weight: float = 0.2
+    residual_weight: float = 0.2#0.2
     residual_warmup_epochs: int = 0
     residual_scale: float = 200  # <=0 enables automatic scaling from teacher residual
     ic_samples: int = 256
     bc_samples: int = 256
     residual_samples: int = 2048
-    gradient_noise_snr_db: float = 80.0
+    gradient_noise_snr_db: float = 45.0
 
     # Fourier feature encoding
     fourier_features: int = 32
@@ -60,7 +60,16 @@ class TrainingConfig:
     # Data subsampling along z
     z_stride: int = 2
     # Fraction of t samples per z-slice to draw each epoch (0< t_ratio <=1; 1 keeps all)
-    t_ratio: float = 0.2
+    t_ratio: float = 0.5
+
+    # MATLAB hardware call control (optional; None disables MATLAB call)
+    matlab_layer: int | None = 1       # target linear layer index for MATLAB call
+    matlab_call_idx: int | None = 0    # target tile index within that layer
+    matlab_log_epoch_tag: str = "epoch"   # tag to distinguish epochs for MATLAB logging
+    # Candidate lists for per-epoch随机/轮换选择；为空则使用上述单值
+    # 示例：matlab_layer_candidates = (0, 1, 2)；matlab_call_idx_candidates = (0, 1, 2, 3)
+    matlab_layer_candidates: tuple[int, ...] | None = (1,2)
+    matlab_call_idx_candidates: tuple[int, ...] | None = (0,1,2,3,4,5,6,7,8,9)
 
     pde_variant: PDEVariant = "ssfm"
 

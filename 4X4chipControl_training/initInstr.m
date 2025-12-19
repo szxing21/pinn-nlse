@@ -1,4 +1,10 @@
 function[dac, tekAWG, agAWG, pd1, pd2, laser] = initInstr
+objs = instrfind('Type','gpib');
+for k = 1:numel(objs)
+    try, fclose(objs(k)); end
+    try, delete(objs(k)); end
+end
+clear objs
 
 tekAWG = instrfind('Type', 'visa-usb', 'RsrcName', 'USB0::0x0699::0x034C::C010870::0::INSTR', 'Tag', '');
 if isempty(tekAWG)
@@ -18,23 +24,11 @@ else
 end
 fopen(agAWG);
 
-pd1 = instrfind('Type', 'gpib', 'BoardIndex', 0, 'PrimaryAddress', 23, 'Tag', '');
-if isempty(pd1)
-    pd1 = gpib('NI',0, 23);
-else
-    fclose(pd1);
-    pd1 = pd1(1);
-end
-fopen(pd1);
-
-pd2 = instrfind('Type', 'gpib', 'BoardIndex', 0, 'PrimaryAddress', 22, 'Tag', '');
-if isempty(pd2)
-    pd2 = gpib('NI',0, 22);
-else
-    fclose(pd2);
-    pd2 = pd2(1);
-end
-fopen(pd2);
+% PDs via VISA (visadev)
+pd1 = visadev("GPIB0::23::INSTR");
+pd2 = visadev("GPIB0::22::INSTR");
+% pd1.Timeout = 5; pd2.Timeout = 5;
+% pd1.Terminator = "LF"; pd2.Terminator = "LF";
 
 laser = instrfind('Type', 'gpib', 'BoardIndex', 0, 'PrimaryAddress', 3, 'Tag', '');
 if isempty(laser)

@@ -6,13 +6,15 @@ function Y = real_mul_shift(A, B)
 %     2) 归一化到 [0,1]：Wn = Wp/max(Wp), Xn = Xp/max(Xp)
 %     3) 调用 run_mvm_eq(Wn, Xn) 计算主项，输出再乘回缩放因子
 %     4) 补偿项在数字域：A*B = Wp*Xp - d*sum(Wp,2)*1' - c*1*sum(Xp,1) + k*c*d
-
+    clearvars -except A B
+    save('workspace_AB.mat');
     if ~isreal(A) || ~isreal(B)
         error('Inputs must be real.');
     end
-
-    c = -min(A(:)); c = max(c, 0);
-    d = -min(B(:)); d = max(d, 0);
+    epsc = 0.01*max(max(abs(A)));
+    epsd = 0.01*max(max(abs(B)));
+    c = -min(A(:)); c = max(c, 0)+epsc;
+    d = -min(B(:)); d = max(d, 0)+epsd;
     Wp = A + c;
     Xp = B + d;
 
@@ -38,6 +40,12 @@ function Y = real_mul_shift(A, B)
     corr3 = k * c * d;                    % c*d*1*1 (scalar)
 
     Y = Ypos - corr1 - corr2 + corr3;
+    idx = str2double(fileread('index.txt'));
+    save(sprintf('./Rx/workspace_real_%d.mat', idx));
+    fid = fopen('index.txt','w');
+    fprintf(fid,'%d', idx+1);
+    fclose(fid);
+
 end
 % %% test
 % close all;

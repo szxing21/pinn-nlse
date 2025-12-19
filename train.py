@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List, Optional
 import time
+import os
+import random
 
 import numpy as np
 import torch
@@ -87,6 +89,25 @@ def train(
 
     start_time = time.time()
 
+    # Propagate MATLAB call controls (if any) via environment variables.
+    if getattr(config, "matlab_layer", None) is not None:
+        os.environ["MATLAB_LAYER"] = str(config.matlab_layer)
+    else:
+        os.environ.pop("MATLAB_LAYER", None)
+    if getattr(config, "matlab_call_idx", None) is not None:
+        os.environ["MATLAB_CALL_IDX"] = str(config.matlab_call_idx)
+    else:
+        os.environ.pop("MATLAB_CALL_IDX", None)
+    if getattr(config, "matlab_log_epoch_tag", None):
+        os.environ["MATLAB_LOG_EPOCH"] = str(config.matlab_log_epoch_tag)
+
+    # Prepare per-epoch checkpoint directory with descriptive naming.
+    hw_flag = "hardware" if any(config.external_layers) else "soft"
+    mat_flag = "exp" if config.matlab_layer is not None else "sim"
+    folder_name = f"mode-{config.mode}_ff-{config.fourier_features}_{hw_flag}_{mat_flag}"
+    run_dir = Path("checkpoints") / folder_name
+    run_dir.mkdir(parents=True, exist_ok=True)
+
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
     scheduler = _configure_scheduler(optimizer, config)
@@ -138,6 +159,27 @@ def train(
     balance_state: Optional[float] = None
 
     for epoch in range(1, config.num_epochs + 1):
+        # Refresh MATLAB controls per epoch; if matlab_layer is None, skip entirely.
+        if config.matlab_layer is not None:
+            current_layer = config.matlab_layer
+            current_call_idx = config.matlab_call_idx
+            if config.matlab_layer_candidates:
+                current_layer = random.choice(config.matlab_layer_candidates)
+            if config.matlab_call_idx_candidates:
+                current_call_idx = random.choice(config.matlab_call_idx_candidates)
+
+            os.environ["MATLAB_LAYER"] = str(current_layer)
+            if current_call_idx is not None:
+                os.environ["MATLAB_CALL_IDX"] = str(current_call_idx)
+            else:
+                os.environ.pop("MATLAB_CALL_IDX", None)
+            if getattr(config, "matlab_log_epoch_tag", None):
+                os.environ["MATLAB_LOG_EPOCH"] = f"{config.matlab_log_epoch_tag}_{epoch}"
+        else:
+            os.environ.pop("MATLAB_LAYER", None)
+            os.environ.pop("MATLAB_CALL_IDX", None)
+            os.environ.pop("MATLAB_LOG_EPOCH", None)
+
         physics_scale = 1.0
         if config.mode == "pinn" and config.residual_warmup_epochs > 0:
             warmup = max(config.residual_warmup_epochs, 1)
@@ -254,6 +296,33 @@ def train(
             print(message, flush=True)
         else:
             print(message, end="\r", flush=True)
+
+        # Save checkpoint for this epoch
+        ckpt_path = run_dir / f"epoch_{epoch:04d}.pt"
+        torch.save({"epoch": epoch, "model_state": model.state_dict(), "config": config}, ckpt_path)
+
+        # Persist history each epoch (JSON overwrite) and append CSV row.
+        try:
+            import json
+
+            hist_path = run_dir / "history.json"
+            with hist_path.open("w", encoding="utf-8") as f:
+                json.dump(history, f, ensure_ascii=False, indent=2)
+
+            csv_path = run_dir / "history.csv"
+            write_header = not csv_path.exists() or csv_path.stat().st_size == 0
+            with csv_path.open("a", encoding="utf-8") as f:
+                if write_header:
+                    f.write("epoch,loss,data,initial,boundary,residual,physics_scale,adaptive_balance\n")
+                data_val = history.get("data_loss", [None])[-1]
+                init_val = history.get("initial_loss", [None])[-1] if "initial_loss" in history else None
+                bc_val = history.get("boundary_loss", [None])[-1] if "boundary_loss" in history else None
+                res_val = history.get("residual_loss", [None])[-1] if "residual_loss" in history else None
+                phys = history.get("physics_scale", [None])[-1] if "physics_scale" in history else None
+                bal = history.get("adaptive_balance", [None])[-1] if "adaptive_balance" in history else None
+                f.write(f"{epoch},{average_loss},{data_val},{init_val},{bc_val},{res_val},{phys},{bal}\n")
+        except Exception:
+            pass
 
     if config.save_path:
         checkpoint_path = Path(config.save_path)

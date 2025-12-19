@@ -3,6 +3,9 @@ from __future__ import annotations
 from typing import Mapping, Sequence
 from pathlib import Path
 
+import os
+import json
+import re
 import numpy as np
 
 import torch
@@ -11,9 +14,41 @@ import torch.nn.functional as F
 
 # Optional: MATLAB real_mul_shift via MATLAB Engine (non-autograd path)
 _MATLAB_ENG = None
+_MATLAB_LOG_COUNTER = 0
+_MATLAB_LAST_EPOCH = None
+_MATLAB_CALLED_THIS_EPOCH = False
+_MATLAB_LAYER_TARGET = None
+_MATLAB_CALL_IDX_TARGET = None
 
 
-def _call_matlab_real_mul_shift(W_tile: torch.Tensor, X_tile: torch.Tensor) -> torch.Tensor | None:
+def _matlab_call_planned(layer_idx: int | None, in_dim: int, out_dim: int) -> bool:
+    """
+    Check, without side-effects, whether a MATLAB call could be triggered for this forward pass.
+    Uses the 4x4 tiling scheme to estimate tile indices; returns False if already called this
+    epoch, layer mismatch, or call_idx out of range.
+    """
+    if _MATLAB_CALLED_THIS_EPOCH:
+        return False
+    if layer_idx is None:
+        return False
+
+    try:
+        target_layer = int(os.environ.get("MATLAB_LAYER", "-1"))
+        target_call_idx = int(os.environ.get("MATLAB_CALL_IDX", "-1"))
+    except ValueError:
+        return False
+
+    if target_layer != layer_idx or target_call_idx < 0:
+        return False
+
+    base_block = 4
+    in_blocks = (in_dim + base_block - 1) // base_block
+    out_blocks = (out_dim + base_block - 1) // base_block
+    total_tiles = in_blocks * out_blocks
+    return target_call_idx < total_tiles
+
+
+def _call_matlab_real_mul_shift(W_tile: torch.Tensor, X_tile: torch.Tensor, meta: dict | None = None) -> torch.Tensor | None:
     """
     Call MATLAB real_mul_shift(A,B) using MATLAB Engine, if available.
 
@@ -43,9 +78,65 @@ def _call_matlab_real_mul_shift(W_tile: torch.Tensor, X_tile: torch.Tensor) -> t
         X_mat = matlab.double(X_np.tolist())
         Y_mat = _MATLAB_ENG.real_mul_shift(W_mat, X_mat)
         Y_np = np.array(Y_mat, dtype=W_np.dtype)
+
+        # Optional logging of inputs/outputs for debugging (saved per call).
+        try:
+            global _MATLAB_LOG_COUNTER
+            log_dir = Path(os.environ.get("MATLAB_LOG_DIR", "matlab_logs"))
+            log_dir.mkdir(parents=True, exist_ok=True)
+            epoch_tag = os.environ.get("MATLAB_LOG_EPOCH", "epoch")
+            fname = log_dir / f"{epoch_tag}_call_{_MATLAB_LOG_COUNTER:06d}.npz"
+            np.savez(fname, W=W_np, X=X_np, Y=Y_np)
+            if meta:
+                with fname.with_suffix(".json").open("w", encoding="utf-8") as f:
+                    json.dump(meta, f, ensure_ascii=False, indent=2)
+            _MATLAB_LOG_COUNTER += 1
+        except Exception:
+            pass
+
         return torch.as_tensor(Y_np, device=W_tile.device, dtype=W_tile.dtype)
     except Exception:
         return None
+
+
+def _should_call_matlab_once_per_epoch(layer_idx: int | None, *, tile_counter: int) -> bool:
+    """
+    Decide whether to invoke MATLAB this call based on env controls.
+
+    Controls (env vars):
+      - MATLAB_LAYER: integer layer index to target (matches layer_idx passed in)
+      - MATLAB_CALL_IDX: integer tile counter (0-based) at which to trigger MATLAB in that layer
+      - MATLAB_LOG_EPOCH: epoch tag; when changed, resets per-epoch flag
+
+    Logic:
+      - Only when layer_idx == MATLAB_LAYER and tile_counter == MATLAB_CALL_IDX,
+        and not yet called in this epoch, do we return True.
+    """
+    global _MATLAB_LAST_EPOCH, _MATLAB_CALLED_THIS_EPOCH
+    epoch_tag = os.environ.get("MATLAB_LOG_EPOCH", "epoch")
+    if epoch_tag != _MATLAB_LAST_EPOCH:
+        _MATLAB_LAST_EPOCH = epoch_tag
+        _MATLAB_CALLED_THIS_EPOCH = False
+
+    if _MATLAB_CALLED_THIS_EPOCH:
+        return False
+
+    if layer_idx is None:
+        return False
+
+    try:
+        target_layer = int(os.environ.get("MATLAB_LAYER", "-1"))
+        target_call_idx = int(os.environ.get("MATLAB_CALL_IDX", "-1"))
+    except ValueError:
+        return False
+
+    if target_layer < 0 or target_call_idx < 0:
+        return False
+
+    if layer_idx == target_layer and tile_counter == target_call_idx:
+        _MATLAB_CALLED_THIS_EPOCH = True
+        return True
+    return False
 
 
 def _hardware_linear(
@@ -55,6 +146,7 @@ def _hardware_linear(
     *,
     snr_db: float = 30.0,
     block: int = 4,
+    layer_idx: int | None = None,
 ) -> torch.Tensor:
     """
     Placeholder for a hardware-backed 4x4 matmul pipeline.
@@ -68,6 +160,10 @@ def _hardware_linear(
     B, in_dim = x.shape
     out_dim, _ = weight.shape
 
+    # Fast path: if this layer will never trigger MATLAB, use a larger block to reduce loop count.
+    if not _matlab_call_planned(layer_idx, in_dim, out_dim):
+        block = max(block, 256)
+
     pad_in = (block - in_dim % block) % block
     pad_out = (block - out_dim % block) % block
 
@@ -77,19 +173,29 @@ def _hardware_linear(
 
     y_hw = x_pad.new_zeros(B, out_pad)
 
+    tile_counter = 0
     for o in range(0, out_pad, block):
         acc = x_pad.new_zeros(B, block)
         for i in range(0, in_dim + pad_in, block):
             W_tile = W_pad[o:o + block, i:i + block]          # [4,4]
             X_tile = x_pad[:, i:i + block].T                  # [4,B]
-            # TODO: replace this matmul with your hardware call:
-            # Y_tile = run_hw_mvm(X_tile, W_tile, zeros(4,1))  # [4,B]
-            Y_matlab = _call_matlab_real_mul_shift(W_tile, X_tile)
-            if Y_matlab is not None:
-                Y_tile = Y_matlab
-            else:
+            Y_tile = None
+            if _should_call_matlab_once_per_epoch(layer_idx, tile_counter=tile_counter):
+                meta = {
+                    "epoch": os.environ.get("MATLAB_LOG_EPOCH", "epoch"),
+                    "tile_o": int(o),
+                    "tile_i": int(i),
+                    "layer": layer_idx,
+                    "tile_counter": tile_counter,
+                }
+                # Y_tile = None
+                Y_matlab = _call_matlab_real_mul_shift(W_tile, X_tile, meta=meta)
+                if Y_matlab is not None:
+                    Y_tile = Y_matlab
+            if Y_tile is None:
                 Y_tile = W_tile @ X_tile                      # software simulation
             acc = acc + Y_tile.T                              # [B,4]
+            tile_counter += 1
         y_hw[:, o:o + block] = acc
 
     y = y_hw[:, :out_dim]
@@ -127,7 +233,8 @@ class ExternalLinear(nn.Module):
         # Software path builds the autograd graph.
         y_model = F.linear(x, self.weight, self.bias)
         # Hardware (simulated) path provides the numerical output with noise.
-        y_hw = _hardware_linear(x, self.weight, self.bias, snr_db=self.snr_db)
+        layer_idx = getattr(self, "layer_idx", None)
+        y_hw = _hardware_linear(x, self.weight, self.bias, snr_db=self.snr_db, layer_idx=layer_idx)
         # Preserve gradients from y_model, but use y_hw values.
         return y_hw.detach() + (y_model - y_model.detach())
 
@@ -185,16 +292,22 @@ class SimplePINN(nn.Module):
 
         layers: list[nn.Module] = []
         prev_dim = effective_input_dim
+        linear_counter = 0
         for idx, width in enumerate(hidden_layers):
             if ext_flags[idx]:
-                layers.append(ExternalLinear(prev_dim, width, bias=True, snr_db=self.external_snr_db))
+                m = ExternalLinear(prev_dim, width, bias=True, snr_db=self.external_snr_db)
+                m.layer_idx = linear_counter
+                layers.append(m)
             else:
                 layers.append(nn.Linear(prev_dim, width))
             layers.append(_clone_activation(activation))
             prev_dim = width
+            linear_counter += 1
         # Output layer
         if ext_flags[-1]:
-            layers.append(ExternalLinear(prev_dim, output_dim, bias=True, snr_db=self.external_snr_db))
+            m = ExternalLinear(prev_dim, output_dim, bias=True, snr_db=self.external_snr_db)
+            m.layer_idx = linear_counter
+            layers.append(m)
         else:
             layers.append(nn.Linear(prev_dim, output_dim))
 
